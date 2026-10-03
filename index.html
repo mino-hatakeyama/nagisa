@@ -52,6 +52,13 @@
   .key.next svg *{stroke:rgba(255,224,138,.95)}
   .key.down{transform:translateY(3px)}
   .key.down svg *{fill:rgba(255,224,138,.32)}
+  /* night: pale-blue, dimmer footprint keys */
+  body.night .key svg *{fill:rgba(6,16,32,.42);stroke:rgba(170,200,240,.32)}
+  body.night .key .lbl{color:rgba(205,222,250,.55);text-shadow:none}
+  body.night .key small{color:rgba(205,222,250,.45)}
+  body.night .key.next svg{filter:drop-shadow(0 0 5px rgba(150,190,255,.35))}
+  body.night .key.next svg *{stroke:rgba(175,205,250,.62)}
+  body.night .key.down svg *{fill:rgba(150,190,255,.16)}
   .key.miss{animation:shake .28s}
   .hud-bottom{transition:opacity 1.2s ease}
   .hud-bottom.idle{opacity:0}
@@ -145,7 +152,7 @@
       <div class="times" role="radiogroup" aria-label="時間帯">
         <span class="tl">時間帯</span>
         <button class="time" type="button" role="radio" aria-checked="true" data-time="day">昼</button>
-        <button class="time" type="button" role="radio" aria-checked="false" data-time="crescent">三日月の夜</button>
+        <button class="time" type="button" role="radio" aria-checked="false" data-time="crescent">夜</button>
       </div>
       <label class="alt"><input type="checkbox" id="altRule" checked> 左右交互ルール <small>（オフにすると同じ足が続いても一歩になります）</small></label>
     </div>
@@ -2083,6 +2090,7 @@ function applyTime(t) {
   oceanMat.uniforms.uSunDir.value.copy(lightDir); swashUniforms.uSunDir.value.copy(lightDir); cloudMat.uniforms.uSun.value.copy(lightDir);
   oceanMat.uniforms.uZenith.value.copy(ZENITH); oceanMat.uniforms.uHorizon.value.copy(HORIZON);   // the material holds its own copies
   towerLampMat.visible = towerGlowMat.visible = isNight;
+  document.body.classList.toggle('night', isNight);
   for (const c of crabs) if (c.nightOnly && isNight) spawnCrab(c, true);
   // rebuild the image-based lighting from the new sky
   scene.remove(sky); envScene.add(sky);
