@@ -94,6 +94,12 @@
   .mode span{font-size:12px;line-height:1.6;color:var(--ink-dim)}
   .mode[aria-checked="true"]{border-color:var(--sun);background:rgba(255,224,138,.16);box-shadow:0 0 0 1px rgba(255,224,138,.45)}
   .mode:focus-visible,.alt input:focus-visible{outline:2px solid var(--sun);outline-offset:3px}
+  .times{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+  .times .tl{font-size:13px;color:var(--ink-dim);margin-right:4px}
+  .time{font:500 13px/1 var(--ui);color:var(--ink);background:var(--glass);border:1px solid var(--line);border-radius:999px;
+    padding:9px 14px;cursor:pointer;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+  .time[aria-checked="true"]{border-color:var(--sun);background:rgba(255,224,138,.18);box-shadow:0 0 0 1px rgba(255,224,138,.45)}
+  .time:focus-visible{outline:2px solid var(--sun);outline-offset:3px}
   .alt{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--ink);cursor:pointer;user-select:none}
   .alt input{width:18px;height:18px;accent-color:#ffe08a;margin:0}
   .alt small{color:var(--ink-dim);font-size:12px}
@@ -135,6 +141,11 @@
       <div class="modes" role="radiogroup" aria-label="あそびかた">
         <button class="mode" type="button" role="radio" aria-checked="true" data-mode="normal" id="modeNormal"><b>ノーマルモード</b><span>ドラッグや ←→ で向きを変えながら、自由に歩く</span></button>
         <button class="mode" type="button" role="radio" aria-checked="false" data-mode="auto" id="modeAuto"><b>自動ルートモード</b><span>浜辺のルートを自動で進む。手を使わずに塔にも登ります</span></button>
+      </div>
+      <div class="times" role="radiogroup" aria-label="時間帯">
+        <span class="tl">時間帯</span>
+        <button class="time" type="button" role="radio" aria-checked="true" data-time="day">昼</button>
+        <button class="time" type="button" role="radio" aria-checked="false" data-time="crescent">三日月の夜</button>
       </div>
       <label class="alt"><input type="checkbox" id="altRule" checked> 左右交互ルール <small>（オフにすると同じ足が続いても一歩になります）</small></label>
     </div>
@@ -220,21 +231,68 @@ const sunDir = new THREE.Vector3(-0.45, 0, 0.6).normalize();
 const ELEV = THREE.MathUtils.degToRad(58);
 sunDir.multiplyScalar(Math.cos(ELEV)); sunDir.y = Math.sin(ELEV); sunDir.normalize();
 
+const moonDir = new THREE.Vector3(0.82, 0, -0.57).normalize();
+const lightDir = sunDir.clone();          // the direction light comes from: the sun by day, the moon by night
 const skyMat = new THREE.ShaderMaterial({
   side: THREE.BackSide, depthWrite: false,
-  uniforms: { uSun: { value: sunDir.clone() } },
+  uniforms: {
+    uSun: { value: sunDir.clone() }, uMoon: { value: moonDir.clone() }, uDay: { value: 1 }, uNight: { value: 0 },
+    uPhase: { value: 0 }, uMoonGlow: { value: 1 },
+    uZen: { value: new THREE.Color(0.020 * 2.3, 0.13 * 2.3, 0.62 * 2.3) }, uMid: { value: new THREE.Color(0.08 * 2.1, 0.32 * 2.1, 0.92 * 2.1) }, uHor: { value: new THREE.Color(0.5 * 2, 0.72 * 2, 1.0 * 2) }
+  },
   vertexShader: `varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); gl_Position.z = gl_Position.w; }`,
   fragmentShader: `
-    uniform vec3 uSun; varying vec3 vDir;
+    uniform vec3 uSun, uMoon, uZen, uMid, uHor; uniform float uDay, uNight, uPhase, uMoonGlow; varying vec3 vDir;
+    float sh(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7)))*43758.5453); }
+    float sh2(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7)))*43758.5453); }
+    float sn(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f*f*(3.0-2.0*f);
+      return mix(mix(sh2(i), sh2(i+vec2(1,0)), u.x), mix(sh2(i+vec2(0,1)), sh2(i+vec2(1,1)), u.x), u.y); }
+    float sfbm(vec2 p){ float v = 0.0, a = 0.5; for (int i = 0; i < 5; i++){ v += a*sn(p); p = p*2.03 + 7.1; a *= 0.5; } return v; }
+    float stars(vec3 d, float scale, float thr){
+      vec3 p = d*scale, c = floor(p), f = fract(p) - 0.5;
+      float h = sh(c); if (h < thr) return 0.0;
+      vec3 o = vec3(sh(c + 1.3), sh(c + 2.7), sh(c + 5.1)) - 0.5;
+      float b = (h - thr)/(1.0 - thr);
+      return smoothstep(0.16, 0.0, length(f - o*0.5)) * (0.25 + 0.75*b*b);
+    }
     void main(){
       vec3 d = normalize(vDir);
       float y = max(d.y, 0.0);
-      vec3 zen = vec3(0.020, 0.13, 0.62)*2.3, mid = vec3(0.08, 0.32, 0.92)*2.1, hor = vec3(0.50, 0.72, 1.0)*2.0;
-      vec3 col = mix(hor, mid, smoothstep(0.0, 0.22, y));
-      col = mix(col, zen, smoothstep(0.18, 0.95, y));
-      if (d.y < 0.0) col = hor*0.95;
+      vec3 col = mix(uHor, uMid, smoothstep(0.0, 0.22, y));
+      col = mix(col, uZen, smoothstep(0.18, 0.95, y));
+      if (d.y < 0.0) col = uHor*0.95;
+      // sun (day)
       float s = max(dot(d, uSun), 0.0);
-      col += vec3(1.0, 0.95, 0.85)*(pow(s, 10.0)*0.35 + pow(s, 200.0)*1.5) + vec3(40.0)*smoothstep(0.99955, 0.9998, s);
+      col += uDay*(vec3(1.0, 0.95, 0.85)*(pow(s, 10.0)*0.35 + pow(s, 200.0)*1.5) + vec3(40.0)*smoothstep(0.99955, 0.9998, s));
+      if (uNight > 0.0 && d.y > -0.02) {
+        float hz = smoothstep(0.0, 0.18, y);
+        // Milky Way: a tilted band with clumpy glow and dark dust lanes
+        vec3 n = normalize(vec3(0.35, 0.5, 0.79));
+        vec3 t1 = normalize(cross(n, vec3(0.0, 1.0, 0.0))), t2 = cross(n, t1);
+        float across = dot(d, n), ang = atan(dot(d, t2), dot(d, t1));
+        float band = exp(-across*across/0.022);
+        float cl = sfbm(vec2(ang*4.0, across*18.0)); float glow = band*(0.12 + 1.1*cl*cl);
+        float lane = smoothstep(0.48, 0.62, sfbm(vec2(ang*7.0 + 3.0, across*34.0)))*exp(-across*across/0.005);
+        float core = 0.6 + 0.4*cos(ang - 0.6);
+        vec3 mw = mix(vec3(0.42, 0.5, 0.78), vec3(0.95, 0.85, 0.7), core*band) * glow * (1.0 - 0.8*lane) * 0.14;
+        float st = stars(d, 170.0, 0.982)*2.6 + stars(d, 380.0, 0.988)*1.3 + stars(d, 700.0, 0.955)*0.37*band;
+        st *= 0.85 + 0.15*sin(dot(d, vec3(931.0, 577.0, 433.0)));
+        col += uNight*hz*(mw + vec3(0.92, 0.95, 1.0)*st);
+        // moon: disc with phase shading, faint earthshine, halo
+        float md = dot(d, uMoon), rad = 0.03;
+        col += uNight*uMoonGlow*(vec3(0.5, 0.6, 0.85)*pow(max(md, 0.0), 260.0)*0.9 + vec3(0.25, 0.32, 0.5)*pow(max(md, 0.0), 12.0)*0.18);
+        if (md > cos(rad)) {
+          vec3 mx = normalize(cross(vec3(0.0, 1.0, 0.0), uMoon)), my = cross(uMoon, mx);
+          float u = dot(d, mx)/sin(rad), v = dot(d, my)/sin(rad), r2 = u*u + v*v;
+          float z = sqrt(max(0.0, 1.0 - r2));
+          vec3 L = vec3(sin(uPhase), 0.0, cos(uPhase));
+          float lit = smoothstep(-0.06, 0.06, dot(vec3(u, v, z), L));
+          float maria = 0.78 + 0.22*sfbm(vec2(u, v)*2.6 + 4.0);
+          float edge = uNight*smoothstep(1.0, 0.92, r2);
+          col = mix(col, vec3(1.0, 0.97, 0.9)*7.0*maria, edge*lit);          // the lit part of the disc
+          col = mix(col, col*0.55 + vec3(0.02, 0.025, 0.04), edge*(1.0 - lit)*0.8);   // the dark part only dims the sky a little (earthshine)
+        }
+      }
       gl_FragColor = vec4(col, 1.0);
       #include <tonemapping_fragment>
       #include <colorspace_fragment>
@@ -253,7 +311,8 @@ sunLight.shadow.mapSize.set(2048, 2048);
 Object.assign(sunLight.shadow.camera, { left: -34, right: 34, top: 34, bottom: -34, near: 1, far: 320 });
 sunLight.shadow.bias = -0.0004; sunLight.shadow.radius = 2; sunLight.shadow.normalBias = 0.03;
 scene.add(sunLight, sunLight.target);
-scene.add(new THREE.HemisphereLight(0x8fbcf0, 0xd8c9ac, 0.2));
+const hemi = new THREE.HemisphereLight(0x8fbcf0, 0xd8c9ac, 0.2);
+scene.add(hemi);
 
 /* ================= procedural textures ================= */
 function tileFBM(size, baseFreq, octaves, seed, gain = 0.5) {
@@ -443,7 +502,8 @@ const oceanMat = new THREE.ShaderMaterial({
   fog: true,
   uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
     uTime: { value: 0 }, uSunDir: { value: sunDir.clone() }, uSunCol: { value: new THREE.Color(1, 0.96, 0.88) },
-    uZenith: { value: ZENITH }, uHorizon: { value: HORIZON }, uNormals: { value: waterNormals }, uBed: { value: 1.1 }
+    uZenith: { value: ZENITH }, uHorizon: { value: HORIZON }, uNormals: { value: waterNormals }, uBed: { value: 1.1 },
+    uLight: { value: new THREE.Color(1, 1, 1) }, uCaus: { value: 1 }, uSpecPow: { value: 600 }, uSpecInt: { value: 14 }, uSurf: { value: new THREE.Color(1.15, 1.15, 1.15) }
   }]),
   vertexShader: `
     varying vec3 vW;
@@ -452,7 +512,7 @@ const oceanMat = new THREE.ShaderMaterial({
       #include <fog_vertex>
     }`,
   fragmentShader: `
-    uniform float uTime, uBed; uniform vec3 uSunDir, uSunCol, uZenith, uHorizon; uniform sampler2D uNormals;
+    uniform float uTime, uBed, uCaus, uSpecPow, uSpecInt; uniform vec3 uSunDir, uSunCol, uZenith, uHorizon, uLight, uSurf; uniform sampler2D uNormals;
     varying vec3 vW;
     #include <fog_pars_fragment>
     ${GLSL_NOISE}
@@ -473,18 +533,18 @@ const oceanMat = new THREE.ShaderMaterial({
       float cz = abs(vnoise(wp*1.2 + vec2(uTime*0.35, 0.0)) - vnoise(wp*1.64 + vec2(0.0, -uTime*0.29) + 3.1));
       float caus = pow(1.0 - clamp(cz*2.2, 0.0, 1.0), 6.0);
       vec3 bed = mix(vec3(0.93, 0.91, 0.84), vec3(0.30, 0.34, 0.26), coral*0.85);
-      bed *= uBed * (0.9 + 0.6*caus*exp(-depth*0.5));
+      bed *= uBed * (0.9 + 0.6*uCaus*caus*exp(-depth*0.5));
       vec3 scatter = vec3(0.0, 0.09, 0.24)*(1.0 - exp(-depth*0.12));
-      vec3 under = bed*T + scatter;
+      vec3 under = (bed*T + scatter)*uLight;
       vec3 R = reflect(-V, n); R.y = abs(R.y);
       vec3 sky = mix(uHorizon, uZenith, pow(clamp(R.y, 0.0, 1.0), 0.45));
       float fres = 0.02 + 0.98*pow(1.0 - max(dot(n, V), 0.0), 5.0);
       vec3 col = mix(under, sky, fres*0.85);
-      col += uSunCol*pow(max(dot(R, uSunDir), 0.0), 600.0)*14.0;
+      col += uSunCol*pow(max(dot(R, uSunDir), 0.0), uSpecPow)*uSpecInt;
       float rb = abs(d - reefD + 4.0*fbm(wp*0.05 + uTime*0.02));
       float surf = (1.0 - smoothstep(0.0, 4.5, rb)) * smoothstep(0.35, 0.62, fbm(wp*0.25 + vec2(uTime*0.35, 0.0)));
       surf *= 0.55 + 0.45*sin(uTime*0.6 + wp.y*0.02);
-      col = mix(col, vec3(1.15), clamp(surf, 0.0, 1.0));
+      col = mix(col, uSurf, clamp(surf, 0.0, 1.0));
       gl_FragColor = vec4(col, 1.0);
       #include <tonemapping_fragment>
       #include <colorspace_fragment>
@@ -499,7 +559,7 @@ scene.add(ocean);
 const swashUniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
   uTime: { value: 0 }, uLevel: { value: 0.02 }, uFoamAmt: { value: 0 }, uBand: { value: 30 }, uBandAmt: { value: 0 },
   uCycle: { value: 0 }, uSunDir: { value: sunDir.clone() }, uSunCol: { value: new THREE.Color(1.0, 0.96, 0.88) },
-  uSkyCol: { value: HORIZON.clone() }
+  uSkyCol: { value: HORIZON.clone() }, uLight: { value: new THREE.Color(1, 1, 1) }
 }]);
 const swashMat = new THREE.ShaderMaterial({
   uniforms: swashUniforms, transparent: true, depthWrite: false, fog: true,
@@ -520,7 +580,7 @@ const swashMat = new THREE.ShaderMaterial({
     }`,
   fragmentShader: `
     uniform float uTime, uFoamAmt, uBand, uBandAmt;
-    uniform vec3 uSunDir, uSunCol, uSkyCol;
+    uniform vec3 uSunDir, uSunCol, uSkyCol, uLight;
     varying float vDepth; varying float vOff; varying vec3 vWorld;
     #include <fog_pars_fragment>
     ${GLSL_NOISE}
@@ -544,10 +604,10 @@ const swashMat = new THREE.ShaderMaterial({
       vec3 n = normalize(vec3((h0-hx)*0.8, 1.0, (h0-hz)*0.8));
       float fres = pow(1.0 - max(dot(n, V), 0.0), 4.0);
       float spec = pow(max(dot(reflect(-V, n), uSunDir), 0.0), 200.0);
-      vec3 shallow = vec3(0.55, 0.9, 0.85);
+      vec3 shallow = vec3(0.55, 0.9, 0.85)*uLight;
       vec3 col = mix(shallow, uSkyCol, 0.15 + 0.6*fres) + uSunCol*spec*4.0;
       float alpha = body*(0.14 + 0.5*fres) + spec*body;
-      vec3 foamCol = vec3(1.15, 1.14, 1.12) * (0.8 + 0.25*max(dot(n, uSunDir), 0.0));
+      vec3 foamCol = uLight*vec3(1.15, 1.14, 1.12) * (0.8 + 0.25*max(dot(n, uSunDir), 0.0));
       col = mix(col, foamCol, foam);
       alpha = clamp(max(alpha, foam*0.95), 0.0, 1.0);
       gl_FragColor = vec4(col, alpha);
@@ -598,10 +658,10 @@ function waveState(t) {
 /* ================= clouds (fair-weather cumulus) ================= */
 const cloudMat = new THREE.ShaderMaterial({
   transparent: true, depthWrite: false, side: THREE.DoubleSide,
-  uniforms: { uTime: { value: 0 }, uSun: { value: sunDir.clone() }, uCam: { value: new THREE.Vector3() } },
+  uniforms: { uTime: { value: 0 }, uSun: { value: sunDir.clone() }, uCam: { value: new THREE.Vector3() }, uBright: { value: new THREE.Color(2.2, 2.2, 2.15) }, uShade: { value: new THREE.Color(0.62, 0.7, 0.86) }, uAlpha: { value: 1 }, uCov: { value: 0 } },
   vertexShader: `varying vec3 vW; void main(){ vec4 w = modelMatrix*vec4(position,1.); vW = w.xyz; gl_Position = projectionMatrix*viewMatrix*w; }`,
   fragmentShader: `
-    uniform float uTime; uniform vec3 uSun; uniform vec3 uCam; varying vec3 vW;
+    uniform float uTime, uAlpha, uCov; uniform vec3 uSun, uCam, uBright, uShade; varying vec3 vW;
     ${GLSL_NOISE}
     float dens(vec2 p){
       vec2 q = vec2(vnoise(p*1.7), vnoise(p*1.7 + 7.3));
@@ -612,16 +672,16 @@ const cloudMat = new THREE.ShaderMaterial({
     void main(){
       vec2 p = vW.xz*0.0012 + vec2(uTime*0.004, uTime*0.0015);
       float d = dens(p);
-      float cov = smoothstep(0.50, 0.56, d);
+      float cov = smoothstep(0.50 + uCov, 0.56 + uCov, d);
       vec2 sd = normalize(uSun.xz + 1e-4)*0.02;
       float lit = clamp(0.55 + (d - dens(p + sd))*9.0, 0.0, 1.0);
       float core = smoothstep(0.54, 0.75, d);
       float dist = length(vW.xz - uCam.xz);
       float fade = 1.0 - smoothstep(2200.0, 4600.0, dist);
-      vec3 bright = vec3(2.2, 2.2, 2.15), shade = vec3(0.62, 0.7, 0.86);
+      vec3 bright = uBright, shade = uShade;
       vec3 col = mix(bright, shade, core*0.75*(1.0 - lit*0.6));
       col *= 0.85 + 0.15*lit;
-      gl_FragColor = vec4(col, cov*fade);
+      gl_FragColor = vec4(col, cov*fade*uAlpha);
       #include <tonemapping_fragment>
       #include <colorspace_fragment>
     }`
@@ -648,6 +708,9 @@ scene.add(jet.group);
     const hs = new THREE.Mesh(new THREE.BoxGeometry(7, 0.35, 3.2), white); hs.position.set(sx * 3.6, 0.8, 24); hs.rotation.y = -sx * 0.35; body.add(hs);
   }
   const fin = new THREE.Mesh(new THREE.BoxGeometry(0.4, 7, 5), white); fin.position.set(0, 4.5, 24); fin.rotation.x = -0.45; body.add(fin);
+  const lamp = (r, g, b, x, y, z, size) => { const m = new THREE.Mesh(new THREE.SphereGeometry(size, 8, 6), new THREE.MeshBasicMaterial({ fog: false })); m.material.color.setRGB(r, g, b); m.position.set(x, y, z); m.visible = false; body.add(m); return m; };
+  jet.navL = lamp(6, 0.4, 0.3, -19.5, -0.8, 6.2, 1.3); jet.navR = lamp(0.4, 6, 0.8, 19.5, -0.8, 6.2, 1.3);
+  jet.strobe = lamp(8, 8, 8, 0, 1.0, 29.5, 1.5); jet.beacon = lamp(7, 0.6, 0.4, 0, 2.4, 0, 1.3);
   body.scale.setScalar(1.6);          // a little larger than life so it reads from the ground
   jet.body = body; jet.group.add(body); body.visible = false;
 })();
@@ -696,6 +759,10 @@ function updateJet(dt) {
   const z = jet.z0 + jet.dz * d;                              // local to the group
   const px = jet.x0 + jet.dx * d;
   jet.body.position.set(px, jet.alt, z);
+  jet.navL.visible = jet.navR.visible = isNight;                       // at night: navigation lights instead of contrails
+  jet.strobe.visible = isNight && (jet.t % 1.3) < 0.07;
+  jet.beacon.visible = isNight && (jet.t % 1.0) < 0.22;
+  for (const tr of trails) tr.mesh.visible = !isNight;
   const sideX = jet.dz, sideZ = -jet.dx;                     // horizontal, perpendicular to the flight path
   for (const tr of trails) {
     const ex = px + sideX * tr.side * 12, ez = z + sideZ * tr.side * 12, ey = jet.alt - 3;
@@ -994,6 +1061,8 @@ const flowerSpots = []; // base-period patches of 浜昼顔
 
 /* ================= なぎさの塔: a round lookout tower; the spiral stair winds down to the ground ================= */
 const PB = heightAt(TX, TZ) + 0.45;
+const towerLampMat = new THREE.MeshBasicMaterial({ fog: false, visible: false }); towerLampMat.color.setRGB(6, 0.35, 0.2);
+const towerGlowMat = new THREE.MeshBasicMaterial({ color: 0xff3020, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, visible: false });
 const SHAFT_H = 10, SHAFT_R = 2.0, RT = PB + SHAFT_H;   // roof deck = top of the cylinder
 const polar = (r, a) => ({ x: TX + r * Math.cos(a), z: TZ - r * Math.sin(a) });   // a increases anticlockwise seen from above
 const SP_Y0 = heightAt(TOWER_M.x, TOWER_M.z) + 0.12;   // the first tread sits on the ground
@@ -1074,6 +1143,9 @@ function pathAt(sv) {
     const m = add(new THREE.TorusGeometry(RR, h === RH ? 0.035 : 0.02, 6, 60, arc), rail, 0, RT + h, 0);
     m.rotation.set(Math.PI / 2, 0, -(gA1 + arc));
   }
+  { const c = polar(RR, SP_AEND + Math.PI);
+    const lampM = new THREE.Mesh(new THREE.SphereGeometry(0.08, 10, 8), towerLampMat); lampM.position.set(c.x - TX, RT + RH + 0.09, c.z - TZ); g.add(lampM);
+    const glowM = new THREE.Mesh(new THREE.SphereGeometry(0.45, 12, 10), towerGlowMat); glowM.position.copy(lampM.position); g.add(glowM); }
   // rough limestone boulders around the knoll (kept clear of the stair foot on the sea side)
   const r = mulberry32(909);
   for (let i = 0; i < 9; i++) {
@@ -1088,6 +1160,36 @@ function pathAt(sv) {
 })();
 
 /* ================= beach parasol and two wooden loungers ================= */
+const TORCH = { x: PARASOL.x + 1.6, z: PARASOL.z + 2.4 };
+const flameMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+  uniforms: { uTime: { value: 0 }, uGain: { value: 1 } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+  fragmentShader: `
+    uniform float uTime, uGain; varying vec2 vUv;
+    float h(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7)))*43758.5453); }
+    float n(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f*f*(3.0-2.0*f);
+      return mix(mix(h(i), h(i+vec2(1,0)), u.x), mix(h(i+vec2(0,1)), h(i+vec2(1,1)), u.x), u.y); }
+    void main(){
+      vec2 uv = vUv; float y = uv.y;
+      float t = uTime*2.6;
+      float wob = (n(vec2(uv.y*3.0 - t, 1.7)) - 0.5)*0.35*y;
+      float x = (uv.x - 0.5 + wob)*2.0;
+      float width = 0.75*pow(1.0 - y, 0.9)*(0.55 + 0.45*smoothstep(0.0, 0.25, y));
+      float body = 1.0 - smoothstep(width*0.5, width, abs(x));
+      float turb = n(vec2(uv.x*6.0, uv.y*5.0 - t*1.4)) * 0.7 + n(vec2(uv.x*13.0, uv.y*11.0 - t*2.3)) * 0.3;
+      float f = body * smoothstep(0.0, 0.08, y) * (1.0 - smoothstep(0.55, 1.0, y + (turb - 0.5)*0.5));
+      f *= 0.6 + 0.6*turb;
+      vec3 col = mix(vec3(1.0, 0.25, 0.03), vec3(1.0, 0.75, 0.25), smoothstep(0.2, 0.75, f));
+      col = mix(col, vec3(1.0, 0.95, 0.75), smoothstep(0.75, 1.0, f)*(1.0 - y));
+      gl_FragColor = vec4(col*f*1.3*uGain, f);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`
+});
+const emberMat = new THREE.MeshStandardMaterial({ color: 0x1a120c, roughness: 1, emissive: 0x6a1d05, emissiveIntensity: 0 });
+const torchLight = new THREE.PointLight(0xff9a4a, 0, 14, 2);
+scene.add(torchLight);
 (function buildParasol() {
   const g = new THREE.Group();
   const fabric = new THREE.MeshStandardMaterial({ color: 0xfbfaf6, roughness: 0.9, side: THREE.DoubleSide });
@@ -1129,8 +1231,33 @@ function pathAt(sv) {
     g.add(L);
   }
   lounger(0.25); lounger(1.15);
+  // torch: an iron fire basket on three crossed poles, a little seaward of the loungers
+  {
+    const iron = new THREE.MeshStandardMaterial({ color: 0x2a2622, roughness: 0.55, metalness: 0.6 });
+    const pole = new THREE.MeshStandardMaterial({ color: 0x3b2b1e, roughness: 0.8 });
+    const tx = TORCH.x - PARASOL.x, tz = TORCH.z - PARASOL.z, ty = gy(tx, tz), BH = ty + 1.55;
+    for (let i = 0; i < 3; i++) {                     // poles cross just under the basket and splay out to the sand
+      const a = i / 3 * TAU + 0.3, foot = new THREE.Vector3(tx + Math.cos(a) * 0.55, ty - 0.1, tz + Math.sin(a) * 0.55);
+      const top = new THREE.Vector3(tx - Math.cos(a) * 0.16, BH + 0.05, tz - Math.sin(a) * 0.16);
+      const dir = top.clone().sub(foot), m = add(new THREE.CylinderGeometry(0.03, 0.035, dir.length(), 6), pole, 0, 0, 0);
+      m.position.copy(foot).addScaledVector(dir, 0.5); m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+    }
+    add(new THREE.CylinderGeometry(0.2, 0.13, 0.22, 16, 1, true), iron, tx, BH, tz).material.side = THREE.DoubleSide;   // basket bowl
+    add(new THREE.CylinderGeometry(0.13, 0.13, 0.02, 16), iron, tx, BH - 0.11, tz);
+    for (const [r, y] of [[0.205, BH + 0.11], [0.16, BH - 0.02]]) { const ring = add(new THREE.TorusGeometry(r, 0.012, 6, 24), iron, tx, y, tz); ring.rotation.x = Math.PI / 2; }
+    for (let i = 0; i < 8; i++) {                     // straps with little curls on top
+      const a = i / 8 * TAU, c = Math.cos(a), sn = Math.sin(a);
+      const st = add(new THREE.BoxGeometry(0.012, 0.3, 0.03), iron, tx + c * 0.2, BH + 0.08, tz + sn * 0.2, 0, -a, 0);
+      const curl = add(new THREE.TorusGeometry(0.035, 0.008, 5, 12, Math.PI * 1.4), iron, tx + c * 0.22, BH + 0.25, tz + sn * 0.22, 0, Math.PI / 2 - a, 0);
+    }
+    add(new THREE.SphereGeometry(0.11, 10, 8), emberMat, tx, BH + 0.06, tz);   // embers (glow only at night)
+    for (let i = 0; i < 3; i++) {                     // flame: crossed billboards with an animated fire shader
+      const f = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.75), flameMat);
+      f.position.set(tx, BH + 0.4, tz); f.rotation.y = i * Math.PI / 3; f.renderOrder = 3; g.add(f);
+    }
+  }
   for (const off of [0, -PERIOD, PERIOD]) { const c = off === 0 ? g : g.clone(); c.position.set(PARASOL.x, 0, PARASOL.z + off); scene.add(c); }
-  addCollider(PARASOL.x + px, PARASOL.z + pz, 0.35);
+  addCollider(PARASOL.x + px, PARASOL.z + pz, 0.35); addCollider(TORCH.x, TORCH.z, 0.55);
   addCollider(PARASOL.x - 0.2, PARASOL.z + 0.25, 0.75); addCollider(PARASOL.x - 0.2, PARASOL.z + 1.15, 0.75);
 })();
 
@@ -1325,6 +1452,7 @@ function spawnSchool() {
 }
 const _fq = new THREE.Quaternion(), _fp = new THREE.Vector3(), _fs = new THREE.Vector3(), _fm = new THREE.Matrix4();
 function updateFish(dt) {
+  if (isNight) { fishMesh.count = fishShadow.count = 0; school.alive = false; return; }
   const nearWater = player.x - shoreX(player.z) > -3.5;
   if (!school.alive) {
     school.wait -= dt;
@@ -1574,8 +1702,22 @@ function chirp(kind, pan = 0) {
     for (let i = 0; i < 2; i++) tone(out, t0 + i * 0.7, 2200, 1700, 0.5, 'sine', 0.045, { mid: 3400 });
   }
 }
-let nextSong = 4, nextPloverCall = 6;
+let nextSong = 4, nextPloverCall = 6, nextInsect = 1;
+function insect(pan) {                       // night chorus: field-cricket trills and bell-cricket "riin"
+  const out = voice(pan), t0 = actx.currentTime + 0.02, rnd = Math.random;
+  if (rnd() < 0.6) {
+    const f = 4300 + rnd() * 700, n = 3 + Math.floor(rnd() * 4);
+    for (let i = 0; i < n; i++) tone(out, t0 + i * 0.06, f, f * 0.98, 0.035, 'sine', 0.018 + rnd() * 0.01);
+  } else {
+    tone(out, t0, 4500 + rnd() * 400, 4450, 0.45 + rnd() * 0.3, 'sine', 0.014, { trill: 36 + rnd() * 10 });
+  }
+}
 function ambientBirds(dt) {
+  if (isNight) {
+    nextInsect -= dt;
+    if (nextInsect < 0) { insect(-Math.cos(player.yaw) * (0.3 + Math.random() * 0.6) + (Math.random() - 0.5) * 0.6); nextInsect = 0.25 + Math.random() * 0.9; }
+    return;
+  }
   nextSong -= dt; nextPloverCall -= dt;
   if (nextSong < 0) {
     // the songbirds live in the green dunes, which are on the walker's left
@@ -1720,13 +1862,14 @@ function meet(kind, text) {
 function panTo(x, z) { const dx = x - player.x, dz = z - player.z, l = Math.hypot(dx, dz) || 1; return (dx * Math.cos(player.yaw) - dz * Math.sin(player.yaw)) / l; }
 
 for (let i = 0; i < 2; i++) { const m = makeHermit(); scene.add(m.g); const h = { m, g: m.g }; spawnHermit(h, true); hermits.push(h); }
-for (let i = 0; i < 4; i++) { const m = makeCrab(); scene.add(m.g); const c = { m, g: m.g }; spawnCrab(c, true); crabs.push(c); }
+for (let i = 0; i < 7; i++) { const m = makeCrab(); scene.add(m.g); const c = { m, g: m.g, nightOnly: i >= 4 }; spawnCrab(c, true); crabs.push(c); }
 for (let i = 0; i < 2; i++) { const m = makeBird('plover'); m.g.scale.setScalar(0.42); scene.add(m.g); const b = { m, g: m.g }; spawnPlover(b, true); plovers.push(b); }
 for (let i = 0; i < 2; i++) { const m = makeBird('tern'); m.g.scale.setScalar(0.85); scene.add(m.g); const b = { m, g: m.g }; spawnTern(b); terns.push(b); }
 
 function updateCreatures(dt) {
-  // crabs
+  // crabs (ghost crabs are busier at night)
   for (const c of crabs) {
+    if (c.nightOnly && !isNight) { c.g.visible = false; continue; }
     const dx = c.x - player.x, dz = c.z - player.z, dist = Math.hypot(dx, dz);
     c.t += dt;
     if (c.state === 'idle') {
@@ -1764,6 +1907,7 @@ function updateCreatures(dt) {
   }
   // plovers
   for (const b of plovers) {
+    if (isNight) { b.g.visible = false; continue; }
     const dx = b.x - player.x, dz = b.z - player.z, dist = Math.hypot(dx, dz);
     b.t += dt;
     let run = 0;
@@ -1793,6 +1937,7 @@ function updateCreatures(dt) {
   }
   // terns circling overhead
   for (const b of terns) {
+    if (isNight) { b.g.visible = false; continue; }
     b.th += b.w * dt;
     const x = b.cx + Math.cos(b.th) * b.r, z = b.cz + Math.sin(b.th) * b.r, y = b.h + Math.sin(b.th * 2) * 1.5;
     b.g.position.set(x, y, z);
@@ -1889,6 +2034,65 @@ function toggleMute() {
 muteBtn.addEventListener('click', toggleMute);
 
 const intro = document.getElementById('intro'), go = document.getElementById('go');
+/* ================= time of day: 昼 / 満月の夜 / 半月の夜 ================= */
+let isNight = false;
+const DAY = {
+  zen: skyMat.uniforms.uZen.value.clone(), mid: skyMat.uniforms.uMid.value.clone(), hor: skyMat.uniforms.uHor.value.clone(),
+  zenith: ZENITH.clone(), horizon: HORIZON.clone(), fog: scene.fog.color.clone()
+};
+function applyTime(t) {
+  if (t !== 'day') t = 'crescent';                 // older saved choices (満月 / 半月) fall back to the crescent night
+  isNight = t !== 'day';
+  const u = skyMat.uniforms;
+  u.uDay.value = isNight ? 0 : 1; u.uNight.value = isNight ? 1 : 0;
+  if (isNight) {
+    // a thin crescent low over the sea: a faint glitter path, and a dark sky where the Milky Way shows well
+    const el = THREE.MathUtils.degToRad(9);
+    moonDir.set(0.82, 0, -0.57).normalize().multiplyScalar(Math.cos(el)); moonDir.y = Math.sin(el); moonDir.normalize();
+    u.uMoon.value.copy(moonDir); u.uPhase.value = 2.45; u.uMoonGlow.value = 0.35;
+    const k = 0.6;
+    u.uZen.value.setRGB(0.004 * k, 0.011 * k, 0.04 * k); u.uMid.value.setRGB(0.01 * k, 0.024 * k, 0.07 * k); u.uHor.value.setRGB(0.035 * k, 0.06 * k, 0.12 * k);
+    lightDir.copy(moonDir);
+    sunLight.color.setRGB(0.68, 0.76, 1.0); sunLight.intensity = 0.45;
+    hemi.color.setRGB(0.16, 0.24, 0.42); hemi.groundColor.setRGB(0.1, 0.1, 0.13); hemi.intensity = 0.7;
+    renderer.toneMappingExposure = 0.95;
+    scene.fog.color.setRGB(0.025, 0.04, 0.08);
+    ZENITH.setRGB(0.006, 0.012, 0.04); HORIZON.setRGB(0.03, 0.05, 0.1);
+    const L = [0.12, 0.14, 0.21];
+    oceanMat.uniforms.uLight.value.setRGB(...L); oceanMat.uniforms.uCaus.value = 0;
+    oceanMat.uniforms.uSpecPow.value = 520; oceanMat.uniforms.uSpecInt.value = 1.6;
+    oceanMat.uniforms.uSunCol.value.setRGB(0.85, 0.9, 1.0); oceanMat.uniforms.uSurf.value.setRGB(L[0] * 3.2, L[1] * 3.2, L[2] * 3.0);
+    swashUniforms.uLight.value.setRGB(...L); swashUniforms.uSunCol.value.setRGB(0.45, 0.5, 0.62); swashUniforms.uSkyCol.value.copy(HORIZON);
+    cloudMat.uniforms.uBright.value.setRGB(0.07, 0.085, 0.13); cloudMat.uniforms.uShade.value.setRGB(0.015, 0.022, 0.04); cloudMat.uniforms.uAlpha.value = 0.6; cloudMat.uniforms.uCov.value = 0.07;
+  } else {
+    u.uZen.value.copy(DAY.zen); u.uMid.value.copy(DAY.mid); u.uHor.value.copy(DAY.hor);
+    lightDir.copy(sunDir);
+    sunLight.color.set(0xfff1dc); sunLight.intensity = 4.0;
+    hemi.color.set(0x8fbcf0); hemi.groundColor.set(0xd8c9ac); hemi.intensity = 0.2;
+    renderer.toneMappingExposure = 0.47;
+    scene.fog.color.copy(DAY.fog);
+    ZENITH.copy(DAY.zenith); HORIZON.copy(DAY.horizon);
+    oceanMat.uniforms.uLight.value.setRGB(1, 1, 1); oceanMat.uniforms.uCaus.value = 1;
+    oceanMat.uniforms.uSpecPow.value = 600; oceanMat.uniforms.uSpecInt.value = 14;
+    oceanMat.uniforms.uSunCol.value.setRGB(1, 0.96, 0.88); oceanMat.uniforms.uSurf.value.setRGB(1.15, 1.15, 1.15);
+    swashUniforms.uLight.value.setRGB(1, 1, 1); swashUniforms.uSunCol.value.setRGB(1.0, 0.96, 0.88); swashUniforms.uSkyCol.value.copy(HORIZON);
+    cloudMat.uniforms.uBright.value.setRGB(2.2, 2.2, 2.15); cloudMat.uniforms.uShade.value.setRGB(0.62, 0.7, 0.86); cloudMat.uniforms.uAlpha.value = 1; cloudMat.uniforms.uCov.value = 0;
+    for (const b of plovers) spawnPlover(b, true);
+    for (const b of terns) spawnTern(b);
+  }
+  oceanMat.uniforms.uSunDir.value.copy(lightDir); swashUniforms.uSunDir.value.copy(lightDir); cloudMat.uniforms.uSun.value.copy(lightDir);
+  oceanMat.uniforms.uZenith.value.copy(ZENITH); oceanMat.uniforms.uHorizon.value.copy(HORIZON);   // the material holds its own copies
+  towerLampMat.visible = towerGlowMat.visible = isNight;
+  for (const c of crabs) if (c.nightOnly && isNight) spawnCrab(c, true);
+  // rebuild the image-based lighting from the new sky
+  scene.remove(sky); envScene.add(sky);
+  const old = scene.environment; scene.environment = pmrem.fromScene(envScene).texture; if (old) old.dispose();
+  envScene.remove(sky); scene.add(sky);
+  document.querySelectorAll('.time').forEach(b => b.setAttribute('aria-checked', String(b.dataset.time === t)));
+  try { localStorage.setItem('nagisa.time', t); } catch (e) {}
+}
+document.querySelectorAll('.time').forEach(b => b.addEventListener('click', () => applyTime(b.dataset.time)));
+try { const tt = localStorage.getItem('nagisa.time'); if (tt && tt !== 'day') applyTime(tt); } catch (e) {}
 const modeBtns = [document.getElementById('modeNormal'), document.getElementById('modeAuto')], altBox = document.getElementById('altRule');
 function setMode(m) { modeBtns.forEach(b => b.setAttribute('aria-checked', String(b.dataset.mode === m))); try { localStorage.setItem('nagisa.mode', m); } catch (e) {} }
 modeBtns.forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)));
@@ -2015,8 +2219,13 @@ function frame() {
   if (dirty) printMesh.instanceMatrix.needsUpdate = true;
 
   updateCreatures(dt); updateFish(dt); updateJet(dt);
+  flameMat.uniforms.uTime.value = worldTime;
+  { const k = Math.round((player.z - TORCH.z) / PERIOD) * PERIOD, flick = 0.82 + 0.12 * Math.sin(worldTime * 11.3) + 0.08 * Math.sin(worldTime * 23.7 + 1.3);
+    torchLight.position.set(TORCH.x, heightAt(TORCH.x, TORCH.z) + 1.95, TORCH.z + k);
+    torchLight.intensity = isNight ? 9 * flick : 0; flameMat.visible = isNight; emberMat.emissiveIntensity = isNight ? 0.8 : 0; }   // the torch is lit only at night
+  if (isNight) { const on = (worldTime % 2.0) < 1.2; towerLampMat.color.setRGB(on ? 6 : 0.6, on ? 0.35 : 0.04, on ? 0.2 : 0.02); towerGlowMat.opacity = on ? 0.35 : 0.04; }
 
-  sunLight.position.set(player.x, 0, player.z).addScaledVector(sunDir, 150);
+  sunLight.position.set(player.x, 0, player.z).addScaledVector(lightDir, 150);
   sunLight.target.position.set(player.x, 0, player.z);
   sky.position.copy(camera.position);
   clouds.position.x = player.x; clouds.position.z = player.z;
