@@ -159,6 +159,7 @@
       <div class="times" role="radiogroup" aria-label="時間帯">
         <span class="tl">時間帯</span>
         <button class="time" type="button" role="radio" aria-checked="true" data-time="day">昼</button>
+        <button class="time" type="button" role="radio" aria-checked="false" data-time="dusk">夕暮れ</button>
         <button class="time" type="button" role="radio" aria-checked="false" data-time="crescent">夜</button>
       </div>
       <label class="alt"><input type="checkbox" id="altRule" checked> 左右交互ルール <small>（オフにすると同じ足が続いても一歩になります）</small></label>
@@ -251,12 +252,12 @@ const skyMat = new THREE.ShaderMaterial({
   side: THREE.BackSide, depthWrite: false,
   uniforms: {
     uSun: { value: sunDir.clone() }, uMoon: { value: moonDir.clone() }, uDay: { value: 1 }, uNight: { value: 0 },
-    uPhase: { value: 0 }, uMoonGlow: { value: 1 },
+    uPhase: { value: 0 }, uMoonGlow: { value: 1 }, uDusk: { value: 0 },
     uZen: { value: new THREE.Color(0.020 * 2.3, 0.13 * 2.3, 0.62 * 2.3) }, uMid: { value: new THREE.Color(0.08 * 2.1, 0.32 * 2.1, 0.92 * 2.1) }, uHor: { value: new THREE.Color(0.5 * 2, 0.72 * 2, 1.0 * 2) }
   },
   vertexShader: `varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); gl_Position.z = gl_Position.w; }`,
   fragmentShader: `
-    uniform vec3 uSun, uMoon, uZen, uMid, uHor; uniform float uDay, uNight, uPhase, uMoonGlow; varying vec3 vDir;
+    uniform vec3 uSun, uMoon, uZen, uMid, uHor; uniform float uDay, uNight, uPhase, uMoonGlow, uDusk; varying vec3 vDir;
     float sh(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7)))*43758.5453); }
     float sh2(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7)))*43758.5453); }
     float sn(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f*f*(3.0-2.0*f);
@@ -278,6 +279,22 @@ const skyMat = new THREE.ShaderMaterial({
       // sun (day)
       float s = max(dot(d, uSun), 0.0);
       col += uDay*(vec3(1.0, 0.95, 0.85)*(pow(s, 10.0)*0.35 + pow(s, 200.0)*1.5) + vec3(40.0)*smoothstep(0.99955, 0.9998, s));
+      if (uDusk > 0.0) {
+        // sunset: the sky warms toward the sun's side, cooler violet-blue away from it and overhead
+        vec2 hd = normalize(d.xz + 1e-5), hs = normalize(uSun.xz);
+        float toward = 0.5 + 0.5*dot(hd, hs);
+        vec3 hz = mix(vec3(0.36, 0.22, 0.46), vec3(2.6, 0.88, 0.22), pow(toward, 3.0));
+        vec3 md = mix(vec3(0.18, 0.17, 0.42), vec3(1.2, 0.5, 0.36), pow(toward, 4.0));
+        vec3 zn = vec3(0.07, 0.11, 0.32);
+        vec3 dc = mix(hz, md, smoothstep(0.0, 0.14, y));
+        dc = mix(dc, zn, smoothstep(0.12, 0.75, y));
+        if (d.y < 0.0) dc = hz*0.85;
+        float sd = max(dot(d, uSun), 0.0);
+        dc += vec3(2.2, 0.9, 0.3)*pow(sd, 9.0)*0.55 + vec3(2.6, 1.2, 0.45)*pow(sd, 160.0)*1.3;
+        float disc = smoothstep(0.99975, 0.99988, sd) * smoothstep(-0.004, 0.002, d.y);   // the disc sits on the sea horizon
+        dc += vec3(10.0, 4.2, 1.1)*disc;
+        col = mix(col, dc, uDusk);
+      }
       if (uNight > 0.0 && d.y > -0.02) {
         float hz = smoothstep(0.0, 0.18, y);
         // Milky Way: a tilted band with clumpy glow and dark dust lanes
@@ -517,7 +534,7 @@ const oceanMat = new THREE.ShaderMaterial({
   uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
     uTime: { value: 0 }, uSunDir: { value: sunDir.clone() }, uSunCol: { value: new THREE.Color(1, 0.96, 0.88) },
     uZenith: { value: ZENITH }, uHorizon: { value: HORIZON }, uNormals: { value: waterNormals }, uBed: { value: 1.1 },
-    uLight: { value: new THREE.Color(1, 1, 1) }, uCaus: { value: 1 }, uSpecPow: { value: 600 }, uSpecInt: { value: 14 }, uSurf: { value: new THREE.Color(1.15, 1.15, 1.15) }
+    uLight: { value: new THREE.Color(1, 1, 1) }, uCaus: { value: 1 }, uSpecPow: { value: 600 }, uSpecInt: { value: 14 }, uSurf: { value: new THREE.Color(1.15, 1.15, 1.15) }, uGlow: { value: new THREE.Color(0, 0, 0) }
   }]),
   vertexShader: `
     varying vec3 vW;
@@ -526,7 +543,7 @@ const oceanMat = new THREE.ShaderMaterial({
       #include <fog_vertex>
     }`,
   fragmentShader: `
-    uniform float uTime, uBed, uCaus, uSpecPow, uSpecInt; uniform vec3 uSunDir, uSunCol, uZenith, uHorizon, uLight, uSurf; uniform sampler2D uNormals;
+    uniform float uTime, uBed, uCaus, uSpecPow, uSpecInt; uniform vec3 uSunDir, uSunCol, uZenith, uHorizon, uLight, uSurf, uGlow; uniform sampler2D uNormals;
     varying vec3 vW;
     #include <fog_pars_fragment>
     ${GLSL_NOISE}
@@ -552,6 +569,7 @@ const oceanMat = new THREE.ShaderMaterial({
       vec3 under = (bed*T + scatter)*uLight;
       vec3 R = reflect(-V, n); R.y = abs(R.y);
       vec3 sky = mix(uHorizon, uZenith, pow(clamp(R.y, 0.0, 1.0), 0.45));
+      sky += uGlow*pow(max(dot(normalize(R.xz + 1e-5), normalize(uSunDir.xz)), 0.0), 28.0)*(1.0 - clamp(R.y*4.0, 0.0, 1.0));
       float fres = 0.02 + 0.98*pow(1.0 - max(dot(n, V), 0.0), 5.0);
       vec3 col = mix(under, sky, fres*0.85);
       col += uSunCol*pow(max(dot(R, uSunDir), 0.0), uSpecPow)*uSpecInt;
@@ -983,6 +1001,7 @@ function bushGeometry(seed) {
   return mergeGeometries(parts);
 }
 const flowerSpots = []; // base-period patches of 浜昼顔
+let hiruLeafMat = null;  // glossy by day, matte at night (no moonlight sheen)
 (function placePlants() {
   const r = mulberry32(777);
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
@@ -1030,7 +1049,7 @@ const flowerSpots = []; // base-period patches of 浜昼顔
   leafShape.bezierCurveTo(0.0, 0.06, 0.0, 0.078, 0.02, 0.075);
   leafShape.bezierCurveTo(0.06, 0.07, 0.05, 0.01, 0, 0);
   const leafGeo = new THREE.ShapeGeometry(leafShape, 6).rotateX(-Math.PI / 2 + 0.25);
-  const leafMat = new THREE.MeshStandardMaterial({ color: 0x3f7a2a, roughness: 0.35, side: THREE.DoubleSide, envMapIntensity: 1 });
+  const leafMat = new THREE.MeshStandardMaterial({ color: 0x3f7a2a, roughness: 0.35, side: THREE.DoubleSide, envMapIntensity: 1 }); hiruLeafMat = leafMat;
   const flowerProfile = [];
   for (let i = 0; i <= 10; i++) { const t = i / 10; flowerProfile.push(new THREE.Vector2(0.004 + 0.048 * Math.pow(t, 2.2), 0.055 * Math.pow(t, 0.7))); }
   const flowerGeo = new THREE.LatheGeometry(flowerProfile, 30);
@@ -1738,7 +1757,7 @@ function ambientBirds(dt) {
     const pan = -Math.cos(player.yaw) * 0.7;
     chirp(Math.random() < 0.7 ? 'mejiro' : 'hiyo', pan);
     if (Math.random() < 0.35) setTimeout(() => chirp('mejiro', pan * 0.6), 900 + Math.random() * 1200);
-    nextSong = 5 + Math.random() * 9;
+    nextSong = (5 + Math.random() * 9) * (isDusk ? 2 : 1);   // birds quieten toward evening
   }
   if (nextPloverCall < 0) {
     const near = plovers.filter(b => b.state !== 'fly' && Math.hypot(b.x - player.x, b.z - player.z) < 40)[0];
@@ -1904,7 +1923,110 @@ for (let i = 0; i < 7; i++) { const m = makeCrab(); scene.add(m.g); const c = { 
 for (let i = 0; i < 2; i++) { const m = makeBird('plover'); m.g.scale.setScalar(0.42); scene.add(m.g); const b = { m, g: m.g }; spawnPlover(b, true); plovers.push(b); }
 for (let i = 0; i < 2; i++) { const m = makeBird('tern'); m.g.scale.setScalar(0.85); scene.add(m.g); const b = { m, g: m.g }; spawnTern(b); terns.push(b); }
 
+
+// ---- night: a green sea turtle (アオウミガメ) hauling out to nest, about halfway between one sea arch and the next ----
+const TURTLE = { z: -605, d0: 3.2, d1: duneEdge(-605) + 1.6 };    // base-period z; from the surf all the way up to the foot of the dunes
+const turtle = (() => {
+  const g = new THREE.Group();
+  const shellGeo = new THREE.SphereGeometry(1, 40, 20);
+  { // olive-brown carapace with paler scute seams
+    const P = shellGeo.attributes.position, col = new Float32Array(P.count * 3);
+    for (let i = 0; i < P.count; i++) {
+      const x = P.getX(i), y = P.getY(i), z = P.getZ(i);
+      const a = Math.atan2(x, z), seam = Math.pow(Math.abs(Math.cos(a * 2.5)), 30) + Math.pow(Math.abs(Math.sin(y * 7.5)), 40) * (y > 0.2 ? 1 : 0) + (Math.abs(x) < 0.04 && y > 0.3 ? 1 : 0);
+      const n = 0.85 + 0.3 * Math.sin(x * 17 + z * 11) * Math.sin(z * 13 - x * 7);
+      const base = y < 0.05 ? [0.62, 0.55, 0.36] : [0.3 * n, 0.26 * n, 0.16 * n];
+      const m = Math.min(1, seam) * (y < 0.05 ? 0 : 0.35);
+      col[i * 3] = base[0] + (0.55 - base[0]) * m; col[i * 3 + 1] = base[1] + (0.45 - base[1]) * m; col[i * 3 + 2] = base[2] + (0.26 - base[2]) * m;
+    }
+    shellGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  }
+  const shellMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, envMapIntensity: 0.55 });   // wet shell catches a little moonlight
+  const skinMat = new THREE.MeshStandardMaterial({ color: 0x6e6550, roughness: 0.7, envMapIntensity: 0.3 });
+  const bellyMat = new THREE.MeshStandardMaterial({ color: 0xb8a77a, roughness: 0.7 });
+  const shell = new THREE.Mesh(shellGeo, shellMat); shell.scale.set(0.42, 0.17, 0.55); shell.position.y = 0.17; shell.castShadow = true; g.add(shell);
+  const belly = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 10), bellyMat); belly.scale.set(0.37, 0.08, 0.5); belly.position.y = 0.1; g.add(belly);
+  const head = new THREE.Group(); head.position.set(0, 0.15, -0.55); g.add(head);
+  const neck = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 10), skinMat); neck.scale.set(0.075, 0.065, 0.11); neck.position.z = -0.02; head.add(neck);
+  const skull = new THREE.Mesh(new THREE.SphereGeometry(1, 18, 12), skinMat); skull.scale.set(0.085, 0.075, 0.11); skull.position.set(0, 0.02, -0.11); skull.castShadow = true; head.add(skull);
+  for (const sx of [-1, 1]) { const eye = new THREE.Mesh(new THREE.SphereGeometry(0.014, 8, 6), crabDark); eye.position.set(sx * 0.06, 0.04, -0.15); head.add(eye); }
+  const flip = (len, wid, x, y, z) => {
+    const pivot = new THREE.Group(); pivot.position.set(x, y, z);
+    const f = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 8), skinMat); f.scale.set(len, 0.022, wid); f.position.x = Math.sign(x) * len * 0.85; f.castShadow = true;
+    pivot.add(f); g.add(pivot); return pivot;
+  };
+  const fl = [flip(0.34, 0.09, -0.3, 0.12, -0.3), flip(0.34, 0.09, 0.3, 0.12, -0.3)];
+  const rl = [flip(0.13, 0.08, -0.19, 0.1, 0.46), flip(0.13, 0.08, 0.19, 0.1, 0.46)];
+  g.visible = false; scene.add(g);
+  // the crawl track behind her: a strip of flipper marks pressed into the sand, following the ground
+  const cv = document.createElement('canvas'); cv.width = 128; cv.height = 128;
+  const cx = cv.getContext('2d');
+  cx.fillStyle = 'rgba(40,34,26,0.4)'; cx.fillRect(34, 0, 60, 128);                       // plastron drag
+  cx.strokeStyle = 'rgba(30,25,18,0.75)'; cx.lineWidth = 9; cx.lineCap = 'round';
+  for (const yy of [8, 72]) for (const sx of [-1, 1]) {                                     // paired flipper strokes
+    cx.beginPath(); cx.moveTo(64 + sx * 34, yy + 10); cx.lineTo(64 + sx * 58, yy + 34); cx.stroke();
+    cx.beginPath(); cx.moveTo(64 + sx * 30, yy + 30); cx.lineTo(64 + sx * 52, yy + 50); cx.stroke();
+  }
+  const tt = new THREE.CanvasTexture(cv); tt.wrapT = THREE.RepeatWrapping; tt.colorSpace = THREE.SRGBColorSpace;
+  const N = 120, tp = new Float32Array((N + 1) * 2 * 3), tuv = new Float32Array((N + 1) * 2 * 2), idx = [];
+  for (let i = 0; i < N; i++) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  const tg = new THREE.BufferGeometry(); tg.setAttribute('position', new THREE.BufferAttribute(tp, 3)); tg.setAttribute('uv', new THREE.BufferAttribute(tuv, 2)); tg.setIndex(idx);
+  const track = new THREE.Mesh(tg, new THREE.MeshStandardMaterial({ map: tt, transparent: true, depthWrite: false, roughness: 1, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+  track.frustumCulled = false; track.visible = false; scene.add(track);
+  const col = { x: 0, z: TURTLE.z, r: 0 }; colliders.push(col);
+  return { g, head, fl, rl, track, tg, tp, tuv, N, col, state: 'wait', d: TURTLE.d0, t: 0, said: 0 };
+})();
+function updateTurtle(dt) {
+  const T = turtle;
+  const off = Math.round((player.z - TURTLE.z) / PERIOD) * PERIOD, z = TURTLE.z + off;
+  const sx = shoreX(TURTLE.z), dist = Math.hypot(sx + T.d - player.x, z - player.z);
+  if (!isNight) { T.g.visible = T.track.visible = false; T.col.r = 0; T.state = 'wait'; T.d = TURTLE.d0; T.said = 0; return; }
+  if (dist > 260) { T.state = 'wait'; T.d = TURTLE.d0; T.said = 0; }
+  if (T.state === 'wait' && dist < 150) { T.state = 'crawl'; T.t = 0; }
+  T.t += dt;
+  const fwdNow = T.d;
+  let sweep = 0, rear = 0, lift = 0;
+  if (T.state === 'crawl') {
+    // green turtles heave both front flippers together: a slow power stroke, then a pause
+    const P = 1.9, ph = (T.t % P) / P, stroke = ph < 0.45 ? ph / 0.45 : 1 - (ph - 0.45) / 0.55;
+    sweep = stroke;
+    if (ph < 0.45) { const e = ph / 0.45, v = Math.sin(Math.PI * e); T.d -= v * dt * 0.3 / (0.45 * P) * (Math.PI / 2); lift = v * 0.03; }
+    rear = Math.sin(ph * TAU) * 0.3;
+    if (T.d <= TURTLE.d1) { T.d = TURTLE.d1; T.state = 'dig'; T.t = 0; if (dist < 25) say('ウミガメが砂を掘りはじめた', 3600); }
+  } else if (T.state === 'dig') {
+    rear = Math.sin(T.t * 2.4) * 0.9; sweep = 0.15 + 0.1 * Math.sin(T.t * 1.2); lift = 0.01 * Math.max(0, Math.sin(T.t * 2.4));
+  }
+  const x = sx + T.d, gy = heightAt(x, z);
+  const ws = waveState(worldTime), wl = ws.level;
+  const sink = Math.max(0, Math.min(0.12, (wl - gy) * 0.5));                    // settles a little lower while still in the wash
+  T.g.visible = T.state !== 'wait' || dist < 200;
+  T.g.position.set(x, gy - 0.03 - sink + lift, z);
+  const slope = Math.atan2(heightAt(x - 0.5, z) - heightAt(x + 0.5, z), 1);      // nose up the beach
+  T.g.rotation.set(0, Math.PI / 2, 0); T.g.rotateX(slope + lift * 1.5);
+  T.fl[0].rotation.set(0, -0.9 + sweep * 1.5, -0.25 + sweep * 0.2); T.fl[1].rotation.set(0, 0.9 - sweep * 1.5, 0.25 - sweep * 0.2);
+  T.rl[0].rotation.set(0, -0.3 + rear * 0.5, -0.1); T.rl[1].rotation.set(0, 0.3 + rear * 0.5, 0.1);
+  T.head.rotation.x = 0.12 * Math.sin(T.t * 0.9) - lift * 3;
+  T.col.x = x; T.col.r = 0.55;
+  if (T.state !== 'wait' && dist < 14 && !T.said) { T.said = 1; say('ウミガメが産卵に上がってきた', 4200); }
+  // the track from the surf to her tail
+  const a = sx + TURTLE.d0 + 1.5, b = x + 0.45;
+  T.track.visible = T.g.visible && a - b > 0.2;
+  if (T.track.visible && (fwdNow !== T.d || T.track.userData.z !== z)) {
+    T.track.userData.z = z;
+    for (let i = 0; i <= T.N; i++) {
+      const xi = a + (b - a) * i / T.N, v = (a - xi) / 0.75;
+      for (let k = 0; k < 2; k++) {
+        const zi = z + (k ? 0.55 : -0.55), j = (i * 2 + k);
+        T.tp[j * 3] = xi; T.tp[j * 3 + 1] = heightAt(xi, zi) + 0.012; T.tp[j * 3 + 2] = zi;
+        T.tuv[j * 2] = k; T.tuv[j * 2 + 1] = v;
+      }
+    }
+    T.tg.attributes.position.needsUpdate = true; T.tg.attributes.uv.needsUpdate = true; T.tg.computeVertexNormals();
+  }
+}
+
 function updateCreatures(dt) {
+  updateTurtle(dt);
   // crabs (ghost crabs are busier at night)
   for (const c of crabs) {
     if (c.nightOnly && !isNight) { c.g.visible = false; continue; }
@@ -2073,17 +2195,37 @@ muteBtn.addEventListener('click', toggleMute);
 
 const intro = document.getElementById('intro'), go = document.getElementById('go');
 /* ================= time of day: 昼 / 満月の夜 / 半月の夜 ================= */
-let isNight = false;
+let isNight = false, isDusk = false;
+const duskDir = new THREE.Vector3(), DUSK_EL = THREE.MathUtils.degToRad(1.5);
 const DAY = {
   zen: skyMat.uniforms.uZen.value.clone(), mid: skyMat.uniforms.uMid.value.clone(), hor: skyMat.uniforms.uHor.value.clone(),
   zenith: ZENITH.clone(), horizon: HORIZON.clone(), fog: scene.fog.color.clone()
 };
 function applyTime(t) {
-  if (t !== 'day') t = 'crescent';                 // older saved choices (満月 / 半月) fall back to the crescent night
-  isNight = t !== 'day';
+  if (t !== 'day' && t !== 'dusk') t = 'crescent';   // older saved choices (満月 / 半月) fall back to the crescent night
+  isNight = t === 'crescent'; isDusk = t === 'dusk';
   const u = skyMat.uniforms;
-  u.uDay.value = isNight ? 0 : 1; u.uNight.value = isNight ? 1 : 0;
-  if (isNight) {
+  u.uDay.value = t === 'day' ? 1 : 0; u.uNight.value = isNight ? 1 : 0; u.uDusk.value = isDusk ? 1 : 0;
+  oceanMat.uniforms.uGlow.value.setRGB(0, 0, 0);
+  if (isDusk) {
+    // sunset over the sea, a little ahead and to the right of the walker
+    duskDir.set(0.72, 0, -0.69).normalize().multiplyScalar(Math.cos(DUSK_EL)); duskDir.y = Math.sin(DUSK_EL); duskDir.normalize();
+    u.uSun.value.copy(duskDir);
+    lightDir.copy(duskDir); lightDir.y = Math.sin(THREE.MathUtils.degToRad(7)); lightDir.normalize();   // light a touch higher than the disc, so the beach is not all in shadow
+    sunLight.color.setRGB(1.0, 0.56, 0.3); sunLight.intensity = 2.6;
+    hemi.color.setRGB(0.5, 0.42, 0.62); hemi.groundColor.setRGB(0.42, 0.3, 0.24); hemi.intensity = 0.55;
+    renderer.toneMappingExposure = 0.48;
+    scene.fog.color.setRGB(0.5, 0.3, 0.33);
+    ZENITH.setRGB(0.04, 0.05, 0.15); HORIZON.setRGB(0.2, 0.13, 0.23);
+    oceanMat.uniforms.uGlow.value.setRGB(1.3, 0.48, 0.12);
+    oceanMat.uniforms.uLight.value.setRGB(0.45, 0.33, 0.34); oceanMat.uniforms.uCaus.value = 0.25;
+    oceanMat.uniforms.uSpecPow.value = 200; oceanMat.uniforms.uSpecInt.value = 12;     // a long golden glitter path
+    oceanMat.uniforms.uSunCol.value.setRGB(1.0, 0.58, 0.24); oceanMat.uniforms.uSurf.value.setRGB(1.0, 0.72, 0.6);
+    swashUniforms.uLight.value.setRGB(0.75, 0.55, 0.5); swashUniforms.uSunCol.value.setRGB(1.0, 0.6, 0.3); swashUniforms.uSkyCol.value.copy(HORIZON);
+    cloudMat.uniforms.uBright.value.setRGB(2.2, 0.9, 0.5); cloudMat.uniforms.uShade.value.setRGB(0.36, 0.22, 0.36); cloudMat.uniforms.uAlpha.value = 1; cloudMat.uniforms.uCov.value = 0.03;
+    for (const b of plovers) spawnPlover(b, true);
+    for (const b of terns) spawnTern(b);
+  } else if (isNight) {
     // a thin crescent low over the sea: a faint glitter path, and a dark sky where the Milky Way shows well
     const el = THREE.MathUtils.degToRad(9);
     moonDir.set(0.82, 0, -0.57).normalize().multiplyScalar(Math.cos(el)); moonDir.y = Math.sin(el); moonDir.normalize();
@@ -2098,12 +2240,13 @@ function applyTime(t) {
     ZENITH.setRGB(0.006, 0.012, 0.04); HORIZON.setRGB(0.03, 0.05, 0.1);
     const L = [0.12, 0.14, 0.21];
     oceanMat.uniforms.uLight.value.setRGB(...L); oceanMat.uniforms.uCaus.value = 0;
-    oceanMat.uniforms.uSpecPow.value = 520; oceanMat.uniforms.uSpecInt.value = 1.6;
+    oceanMat.uniforms.uSpecPow.value = 520; oceanMat.uniforms.uSpecInt.value = 0.4;   // crescent: a faint glitter path
     oceanMat.uniforms.uSunCol.value.setRGB(0.85, 0.9, 1.0); oceanMat.uniforms.uSurf.value.setRGB(L[0] * 3.2, L[1] * 3.2, L[2] * 3.0);
     swashUniforms.uLight.value.setRGB(...L); swashUniforms.uSunCol.value.setRGB(0.45, 0.5, 0.62); swashUniforms.uSkyCol.value.copy(HORIZON);
     cloudMat.uniforms.uBright.value.setRGB(0.07, 0.085, 0.13); cloudMat.uniforms.uShade.value.setRGB(0.015, 0.022, 0.04); cloudMat.uniforms.uAlpha.value = 0.6; cloudMat.uniforms.uCov.value = 0.07;
   } else {
     u.uZen.value.copy(DAY.zen); u.uMid.value.copy(DAY.mid); u.uHor.value.copy(DAY.hor);
+    u.uSun.value.copy(sunDir);
     lightDir.copy(sunDir);
     sunLight.color.set(0xfff1dc); sunLight.intensity = 4.0;
     hemi.color.set(0x8fbcf0); hemi.groundColor.set(0xd8c9ac); hemi.intensity = 0.2;
@@ -2120,7 +2263,9 @@ function applyTime(t) {
   }
   oceanMat.uniforms.uSunDir.value.copy(lightDir); swashUniforms.uSunDir.value.copy(lightDir); cloudMat.uniforms.uSun.value.copy(lightDir);
   oceanMat.uniforms.uZenith.value.copy(ZENITH); oceanMat.uniforms.uHorizon.value.copy(HORIZON);   // the material holds its own copies
-  towerLampMat.visible = towerGlowMat.visible = isNight;
+  if (isDusk) { oceanMat.uniforms.uSunDir.value.copy(duskDir); swashUniforms.uSunDir.value.copy(duskDir); }   // the glitter path lines up with the setting disc
+  towerLampMat.visible = towerGlowMat.visible = isNight || isDusk;
+  if (hiruLeafMat) { hiruLeafMat.roughness = isNight ? 1 : 0.35; hiruLeafMat.envMapIntensity = isNight ? 0.25 : 1; }
   document.body.classList.toggle('night', isNight);
   for (const c of crabs) if (c.nightOnly && isNight) spawnCrab(c, true);
   // rebuild the image-based lighting from the new sky
@@ -2131,7 +2276,7 @@ function applyTime(t) {
   try { localStorage.setItem('nagisa.time', t); } catch (e) {}
 }
 document.querySelectorAll('.time').forEach(b => b.addEventListener('click', () => applyTime(b.dataset.time)));
-try { const tt = localStorage.getItem('nagisa.time'); if (tt && tt !== 'day') applyTime(tt); } catch (e) {}
+// the title screen always opens on 昼 (the last choice is not restored)
 const modeBtns = [document.getElementById('modeNormal'), document.getElementById('modeAuto')], altBox = document.getElementById('altRule');
 function setMode(m) { modeBtns.forEach(b => b.setAttribute('aria-checked', String(b.dataset.mode === m))); try { localStorage.setItem('nagisa.mode', m); } catch (e) {} }
 modeBtns.forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)));
@@ -2270,8 +2415,8 @@ function frame() {
   flameMat.uniforms.uTime.value = worldTime;
   { const k = Math.round((player.z - TORCH.z) / PERIOD) * PERIOD, flick = 0.82 + 0.12 * Math.sin(worldTime * 11.3) + 0.08 * Math.sin(worldTime * 23.7 + 1.3);
     torchLight.position.set(TORCH.x, heightAt(TORCH.x, TORCH.z) + 1.95, TORCH.z + k);
-    torchLight.intensity = isNight ? 9 * flick : 0; flameMat.visible = isNight; emberMat.emissiveIntensity = isNight ? 0.8 : 0; }   // the torch is lit only at night
-  if (isNight) { const on = (worldTime % 2.0) < 1.2; towerLampMat.color.setRGB(on ? 6 : 0.6, on ? 0.35 : 0.04, on ? 0.2 : 0.02); towerGlowMat.opacity = on ? 0.35 : 0.04; }
+    const lit = isNight || isDusk; torchLight.intensity = lit ? (isDusk ? 5 : 9) * flick : 0; flameMat.visible = lit; emberMat.emissiveIntensity = lit ? 0.8 : 0; }   // the torch is lit at dusk and at night
+  if (isNight || isDusk) { const on = (worldTime % 2.0) < 1.2; towerLampMat.color.setRGB(on ? 6 : 0.6, on ? 0.35 : 0.04, on ? 0.2 : 0.02); towerGlowMat.opacity = on ? 0.35 : 0.04; }
 
   sunLight.position.set(player.x, 0, player.z).addScaledVector(lightDir, 150);
   sunLight.target.position.set(player.x, 0, player.z);
