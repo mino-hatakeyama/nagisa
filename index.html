@@ -41,6 +41,8 @@
   .meter b{font-weight:500;color:var(--ink);font-size:18px;margin-right:2px}
   .meter .row{display:flex;flex-wrap:wrap;gap:4px 14px}
   .meter .seen b{font-size:15px}
+  .meter .jet{opacity:.9}
+  .meter .jet b{font-variant-numeric:tabular-nums}
   .mute{pointer-events:auto;font:500 12px/1 var(--ui);letter-spacing:.08em;color:var(--ink);
     background:var(--glass);border:1px solid var(--line);border-radius:999px;padding:8px 12px;cursor:pointer;
     backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
@@ -133,7 +135,7 @@
 
 <div class="hud hud-top">
   <div class="meter" aria-live="polite">
-    <div class="row"><span><b id="steps">0</b> 歩</span><span><b id="dist">0.0</b> m</span></div>
+    <div class="row"><span><b id="steps">0</b> 歩</span><span><b id="dist">0.0</b> m</span><span class="jet">次の飛行機 <b id="jetEta">--:--</b></span></div>
     <div class="row seen"><span>カニ <b id="cCrab">0</b></span><span>ヤドカリ <b id="cHermit">0</b></span><span>鳥 <b id="cBird">0</b></span><span>浜昼顔 <b id="cFlower">0</b></span><span>小魚 <b id="cFish">0</b></span></div>
   </div>
   <button class="mute" id="mute" type="button">音あり</button>
@@ -780,7 +782,19 @@ function launchJet() {
   jet.body.visible = true; jet.body.rotation.y = Math.atan2(-dx, -dz);
   for (const tr of trails) tr.pts.length = 0;
 }
+const jetEtaEl = document.getElementById('jetEta'); let jetEtaTxt = '';
+function showJetEta() {            // countdown to the moment the airliner passes overhead (launch + 4200 m at cruising speed)
+  let txt;
+  if (!jet.active) txt = Math.max(0, jet.next + 4200 / 230);
+  else if (jet.queued !== undefined) txt = Math.max(0, jet.queued + 4200 / 230);   // out of sight: already counting down to the next one
+  else txt = (4200 - jet.t * jet.speed) / jet.speed;
+  if (jet.active && jet.queued !== undefined && jet.goneT < 3) txt = '';          // a 3-second pause after 通過中 before the next countdown
+  else if (txt > 0) { const s = Math.ceil(txt); txt = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+  else txt = '通過中';
+  if (txt !== jetEtaTxt) { jetEtaTxt = txt; jetEtaEl.textContent = txt; }
+}
 function updateJet(dt) {
+  showJetEta();
   if (!jet.active) {
     jet.next -= dt;
     if (jet.next < 0) launchJet();
@@ -817,9 +831,13 @@ function updateJet(dt) {
     P.needsUpdate = A.needsUpdate = true;
     tr.mesh.geometry.setDrawRange(0, Math.max(0, list.length - 1) * 6);
   }
-  if (d > 8400) jet.body.visible = false;
+  if (d > 8400) {
+    jet.body.visible = false;
+    if (jet.queued === undefined) { jet.queued = 240 + Math.random() * 120; jet.goneT = 0; }   // gone from view: the next one is scheduled now (roughly every five minutes)
+    else { jet.queued -= dt; jet.goneT += dt; }
+  }
   if (jet.t > 8400 / jet.speed + TRAIL_LIFE) {
-    jet.active = false; jet.next = 240 + Math.random() * 120;   // roughly every five minutes
+    jet.active = false; jet.next = jet.queued ?? 240 + Math.random() * 120; jet.queued = undefined;   // the contrail has faded; keep the same countdown
     for (const tr of trails) { tr.pts.length = 0; tr.mesh.geometry.setDrawRange(0, 0); }
   }
   if (jetGain) {
