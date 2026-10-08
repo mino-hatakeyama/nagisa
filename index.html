@@ -43,6 +43,10 @@
   .meter .seen b{font-size:15px}
   .meter .jet{opacity:.9}
   .meter .jet b{font-variant-numeric:tabular-nums}
+  .meter .row.top{gap:4px 20px;flex-wrap:nowrap}
+  .meter .row.top b{display:inline-block;text-align:right}
+  #steps{min-width:5ch} #dist{min-width:6.5ch} #jetEta{min-width:3.2em;text-align:left!important}
+  .meter .seen b{display:inline-block;min-width:2ch;text-align:right}
   .mute{pointer-events:auto;font:500 12px/1 var(--ui);letter-spacing:.08em;color:var(--ink);
     background:var(--glass);border:1px solid var(--line);border-radius:999px;padding:8px 12px;cursor:pointer;
     backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
@@ -135,7 +139,7 @@
 
 <div class="hud hud-top">
   <div class="meter" aria-live="polite">
-    <div class="row"><span><b id="steps">0</b> 歩</span><span><b id="dist">0.0</b> m</span><span class="jet">次の飛行機 <b id="jetEta">--:--</b></span></div>
+    <div class="row top"><span><b id="steps">0</b> 歩</span><span><b id="dist">0.0</b> m</span><span class="jet">次の飛行機 <b id="jetEta">--:--</b></span></div>
     <div class="row seen"><span>カニ <b id="cCrab">0</b></span><span>ヤドカリ <b id="cHermit">0</b></span><span>鳥 <b id="cBird">0</b></span><span>浜昼顔 <b id="cFlower">0</b></span><span>小魚 <b id="cFish">0</b></span></div>
   </div>
   <button class="mute" id="mute" type="button">音あり</button>
@@ -218,7 +222,7 @@ function heightAt(x, z) {
   h += smooth(0, 12, dd) * (2.4 + 1.2 * Math.sin(z * KZ * 18 + x * 0.07) + 0.7 * Math.sin(z * KZ * 46 - x * 0.13) + 0.35 * Math.sin(z * KZ * 82 + x * 0.21));
   h += smooth(0, 70, dd) * dd * 0.05;
   h += 0.1 * Math.sin(x * 0.31 + z * KZ * 80) * Math.sin(z * KZ * 62 + 0.7) * smooth(-2, -10, d) * (1 - smooth(-2, 6, dd));
-  h += 0.06 * Math.sin(z * KZ * 240) * Math.exp(-((d + 3) * (d + 3)) / 8);
+  h += 0.06 * Math.sin(z * KZ * 120) * Math.exp(-((d + 3) * (d + 3)) / 8);
   { const tz = wrapZ(z - TZ), tx = x - TX, r2 = tx * tx + tz * tz; h += 2.6 * Math.exp(-r2 / 70); } // rocky knoll under the tower
   return h;
 }
@@ -593,35 +597,78 @@ scene.add(ocean);
 const swashUniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
   uTime: { value: 0 }, uLevel: { value: 0.02 }, uFoamAmt: { value: 0 }, uBand: { value: 30 }, uBandAmt: { value: 0 },
   uCycle: { value: 0 }, uSunDir: { value: sunDir.clone() }, uSunCol: { value: new THREE.Color(1.0, 0.96, 0.88) },
-  uSkyCol: { value: HORIZON.clone() }, uLight: { value: new THREE.Color(1, 1, 1) }
+  uSkyCol: { value: HORIZON.clone() }, uLight: { value: new THREE.Color(1, 1, 1) },
+  uPk: { value: new THREE.Vector2() }, uAge: { value: new THREE.Vector2(99, 99) }, uCyc: { value: new THREE.Vector2() }
 }]);
 const swashMat = new THREE.ShaderMaterial({
-  uniforms: swashUniforms, transparent: true, depthWrite: false, fog: true,
+  uniforms: swashUniforms, transparent: true, depthWrite: false, fog: true, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
   vertexShader: `
     uniform float uLevel, uCycle;
     attribute float ground; attribute float off;
-    varying float vDepth; varying float vOff; varying vec3 vWorld;
+    varying float vDepth; varying float vOff; varying vec3 vWorld; varying float vLz;
     #include <fog_pars_vertex>
     void main(){
       vec3 p = position;
-      float wob = 0.035*sin(p.z*0.21+uCycle*2.1) + 0.022*sin(p.z*0.57+uCycle*5.3) + 0.012*sin(p.z*1.7+uCycle);
-      p.y = mix(uLevel + wob, 0.012, smoothstep(0.0, 6.0, off));
+      float wob = 0.035*sin(p.z*0.105+uCycle*2.1) + 0.022*sin(p.z*0.285+uCycle*5.3) + 0.012*sin(p.z*0.85+uCycle);
+      p.y = max(mix(uLevel + wob, 0.012, smoothstep(0.0, 6.0, off)), ground + 0.04);   // never below the sand, so the wet marks above the water are not hidden
       vec4 wp = modelMatrix * vec4(p,1.0);
-      vWorld = wp.xyz; vDepth = p.y - ground; vOff = off;
+      vWorld = wp.xyz; vDepth = p.y - ground; vOff = off; vLz = position.z;
       vec4 mvPosition = viewMatrix * wp;
       gl_Position = projectionMatrix * mvPosition;
       #include <fog_vertex>
     }`,
   fragmentShader: `
-    uniform float uTime, uFoamAmt, uBand, uBandAmt;
+    uniform float uTime, uFoamAmt, uBand, uBandAmt, uLevel, uCycle; uniform vec2 uPk, uAge, uCyc;
     uniform vec3 uSunDir, uSunCol, uSkyCol, uLight;
-    varying float vDepth; varying float vOff; varying vec3 vWorld;
+    varying float vDepth; varying float vOff; varying vec3 vWorld; varying float vLz;
     #include <fog_pars_fragment>
     ${GLSL_NOISE}
+    float groundAt(vec2 w){            // the beach height near the water, evaluated per pixel so the waterline is a smooth curve
+      float x = w.x, z = w.y, k = 0.0078539816, d = x - shoreX(z);
+      float h = d > 0.0 ? -1.9*(1.0 - exp(-d/24.0)) : -d*0.06;
+      float t = clamp((d + 2.0)/(-8.0), 0.0, 1.0); t = t*t*(3.0 - 2.0*t);
+      h += 0.1*sin(x*0.31 + z*k*80.0)*sin(z*k*62.0 + 0.7)*t;
+      h += 0.06*sin(z*k*120.0)*exp(-(d + 3.0)*(d + 3.0)/8.0);
+      return h;
+    }
+    float wobAt(float c){ return 0.035*sin(vLz*0.105+c*2.1) + 0.022*sin(vLz*0.285+c*5.3) + 0.012*sin(vLz*0.85+c); }   // undulations of the waterline: twice the old wavelength
     void main(){
-      float depth = vDepth;
-      if (depth < -0.005) discard;
+      float toSea = smoothstep(0.0, 6.0, vOff);
+      float level = mix(uLevel + wobAt(uCycle), 0.012, toSea);
+      float g = groundAt(vWorld.xz);
+      float depth = level - g;
       vec2 wp = vWorld.xz;
+      if (depth < -0.005) {
+        // the sand the last two waves ran over: dark and glossy at first, then drying back to its own colour,
+        // with a thin line of bubbles left at the highest reach
+        float wet = 0.0, line = 0.0;
+        for (int i = 0; i < 2; i++) {
+          float pk = i == 0 ? uPk.x : uPk.y, age = i == 0 ? uAge.x : uAge.y, cyc = i == 0 ? uCyc.x : uCyc.y;
+          float lev = mix(pk + wobAt(cyc), 0.012, toSea);
+          float inside = smoothstep(0.006, -0.01, g - lev);
+          wet = max(wet, inside * exp(-age/7.0));
+          float ln = 1.0 - smoothstep(0.0, 0.02, abs(g - lev + 0.006));
+          line = max(line, ln * exp(-age/3.5));
+        }
+        float bub = smoothstep(0.32, 0.62, fbm(wp*5.0 + vec2(uCyc.x*3.7, 0.0)));
+        line *= 0.35 + 0.65*bub;
+        if (wet < 0.01 && line < 0.02) discard;
+        vec3 V = normalize(cameraPosition - vWorld);
+        float fres = pow(1.0 - max(V.y, 0.0), 5.0);
+        float gloss = wet*wet;                                         // the shine goes before the dark colour does
+        vec3 col = vec3(0.36, 0.31, 0.28)*uLight;
+        wet *= 0.8 + 0.35*fbm(wp*0.8 + 2.0);                          // dries a little unevenly
+        col = mix(col, uSkyCol, min(1.0, fres*gloss*1.3)) + uSunCol*pow(max(dot(reflect(-V, vec3(0.0, 1.0, 0.0)), uSunDir), 0.0), 60.0)*gloss*0.6;
+        float alpha = wet*0.55 + fres*gloss*0.45;
+        vec3 foamCol = uLight*vec3(1.1, 1.09, 1.06);
+        col = mix(col, foamCol, line*0.8);
+        alpha = clamp(max(alpha, line*0.85), 0.0, 1.0);
+        gl_FragColor = vec4(col, alpha);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+        #include <fog_fragment>
+        return;
+      }
       float lace  = fbm(wp*1.25 + vec2(uTime*0.05, 0.0));
       float lace2 = fbm(wp*3.4 - vec2(0.0, uTime*0.07) + 5.0);
       float edge = 1.0 - smoothstep(0.0, 0.03 + 0.05*lace, depth);
@@ -1555,7 +1602,12 @@ function spawnCrab(c, near) {
 }
 function spawnPlover(b, near) {
   const p = near ? aheadPoint(18, 40, -4, 0.5) : aheadPoint(35, 80, -4, 0.5);
-  Object.assign(b, { x: p.x, z: p.z, y: 0, state: 'idle', t: 0, face: Math.random() * TAU, seen: false, peck: 0, vy: 0, fly: 0 });
+  const R = Math.random;
+  Object.assign(b, { x: p.x, z: p.z, y: 0, state: 'idle', t: 0, face: Math.random() * TAU, seen: false, peck: R() * 5, vy: 0, fly: 0,
+    // a little personality, so two birds never move in step
+    react: 0.75 + R() * 0.6, fleeSp: 2.6 + R() * 0.9, folSp: 0.6 + R() * 0.6, gap: 0.25 + R() * 0.7, peckRate: 0.9 + R() * 0.9,
+    wait: R() * 2, burst: 0, moving: true, ang: b.face ?? 0, look: 0 });
+  b.ang = b.face;
   b.g.visible = true; b.m.wings.forEach(w => w.pivot.visible = false);
 }
 function spawnTern(b) {
@@ -1853,7 +1905,7 @@ function say(text, ms = 3200) {
   clearTimeout(meet.tt); meet.tt = setTimeout(() => meetEl.classList.remove('on'), ms);
 }
 function towerStep(foot, dur) {
-  if (tower.mode === 'top' && autoMode && tower.topSteps < 16) {
+  if (tower.mode === 'top' && autoMode && !tower.panoDone) {
     tower.topSteps++;
     step = { foot, t: 0, dur, path: true, pano: tower.topSteps, yaw0: player.yaw, s0: tower.s, s1: tower.s, fx: player.x, fz: player.z, tx: player.x, tz: player.z };
     playStone(dur * 0.55, false); stepCount++;
@@ -1863,10 +1915,17 @@ function towerStep(foot, dur) {
   const dir = tower.mode === 'up' ? 1 : -1;
   const s1 = Math.max(0, Math.min(towerPath.total, tower.s + dir * STRIDE * 0.9));
   step = { foot, t: 0, dur, path: true, s0: tower.s, s1, fx: player.x, fz: player.z, tx: player.x, tz: player.z };
-  if (tower.entering) {            // ease from the walker's real position onto the path over this first step
+  if (tower.entering) {            // ease from the walker's real position onto the path, spread over a few steps so there is no lurch
     const q0 = pathAt(tower.s);
-    step.offX = player.x - q0.x; step.offZ = player.z - (q0.z + tower.off); step.offY = (player.eyeY - EYE) - q0.y;
+    const ox = player.x - q0.x, oz = player.z - (q0.z + tower.off), oy = heightAt(player.x, player.z) - q0.y;
+    const n = Math.max(1, Math.min(5, Math.ceil(Math.hypot(ox, oz) / 0.35)));
+    tower.blend = { x: ox, z: oz, y: oy, k: 1, dk: 1 / n };
     tower.entering = false;
+  }
+  if (tower.blend && tower.mode === 'up') {
+    const bl = tower.blend; step.offX = bl.x; step.offZ = bl.z; step.offY = bl.y;
+    step.kA = bl.k; step.kB = Math.max(0, bl.k - bl.dk); bl.k = step.kB;
+    if (bl.k <= 0) tower.blend = null;
   }
   if (Math.max(tower.s, s1) <= towerPath.L[1] + 0.05) playStep(dur * 0.55, false);   // still on the sand at the foot of the stair
   else playStone(dur * 0.55, false);
@@ -2084,13 +2143,49 @@ function updateCreatures(dt) {
     if (dist > 70 || (c.z - player.z) > 25) spawnCrab(c, false);
   }
   // plovers
+  const wsP = waveState(worldTime), rising = wsP.level > (plovers.lastLevel ?? wsP.level) + 1e-5; plovers.lastLevel = wsP.level;
   for (const b of plovers) {
     if (isNight) { b.g.visible = false; continue; }
     const dx = b.x - player.x, dz = b.z - player.z, dist = Math.hypot(dx, dz);
     b.t += dt;
     let run = 0;
-    if (b.state === 'idle') {
-      b.peck += dt;
+    // where the swash reaches at this spot right now (same shape as the drawn water)
+    const lz = baseZ(b.z), lev = wsP.level + 0.035 * Math.sin(lz * 0.105 + wsP.n * 2.1) + 0.022 * Math.sin(lz * 0.285 + wsP.n * 5.3) + 0.012 * Math.sin(lz * 0.85 + wsP.n);
+    let lo = -9, hi = 3;                                   // d (from the shoreline) where the sand rises out of the water
+    for (let i = 0; i < 12; i++) { const mid = (lo + hi) / 2; if (heightAt(shoreX(b.z) + mid, b.z) > lev) lo = mid; else hi = mid; }
+    const edgeX = shoreX(b.z) + lo;
+    if (b.state !== 'fly' && b.state !== 'run') {
+      // シロチドリ: scurry up the beach ahead of an incoming wave, then follow the backwash down to peck at the wet sand.
+      // Each bird has its own timing, speed and angle, and runs in little stop-and-go bursts.
+      const R = Math.random;
+      b.wait -= dt;
+      if (b.x > edgeX - (rising ? b.react : 0.1)) {
+        if (b.state !== 'flee') { b.state = 'flee'; b.ang = Math.PI / 2 + (R() - .5) * 1.1; b.moving = true; b.burst = 0.5 + R() * 0.6; }
+      } else if (b.state === 'flee' && b.x < edgeX - b.react - 0.25 - R() * 0.4) {
+        b.state = 'idle'; b.wait = 0.3 + R() * 2.2;
+      } else if (!rising && b.state === 'idle' && b.wait <= 0 && b.x < edgeX - 1.1 - b.gap && dist > 7) {
+        if (R() < 0.75) { b.state = 'follow'; b.ang = -Math.PI / 2 + (R() - .5) * 1.3; b.moving = true; b.burst = 0.3 + R() * 0.5; }
+        else b.wait = 1 + R() * 2.5;                                       // sometimes it just stays and keeps pecking
+      } else if (b.state === 'follow' && (b.x > edgeX - b.gap || rising)) {
+        b.state = 'idle'; b.wait = 0.5 + R() * 1.5;
+      }
+      if (b.state === 'flee' || b.state === 'follow') {
+        b.burst -= dt;
+        if (b.burst < 0) {                                                // run, stop, run…
+          b.moving = !b.moving || b.state === 'flee' && R() < 0.6;
+          b.burst = b.moving ? 0.25 + R() * 0.6 : 0.12 + R() * (b.state === 'flee' ? 0.15 : 0.45);
+          b.ang += (R() - .5) * 0.5;
+          const c = b.state === 'flee' ? Math.PI / 2 : -Math.PI / 2, da = Math.atan2(Math.sin(b.ang - c), Math.cos(b.ang - c));
+          b.ang = c + Math.max(-0.9, Math.min(0.9, da));                  // keep heading up (or down) the beach, just at a slant
+        }
+        if (b.moving) run = b.state === 'flee' ? b.fleeSp : b.folSp;
+      } else if (b.state === 'idle') {
+        b.look -= dt; if (b.look < 0) { b.ang = b.face + (R() - .5) * 1.4; b.look = 0.8 + R() * 2.5; }   // glancing about
+      }
+      b.face += Math.atan2(Math.sin(b.ang - b.face), Math.cos(b.ang - b.face)) * Math.min(1, dt * 9);
+    }
+    if (b.state === 'idle' || b.state === 'follow') b.peck += dt;
+    if (b.state === 'idle' || b.state === 'flee' || b.state === 'follow') {
       if (dist < 11 && !b.seen) { b.seen = true; meet('bird', 'シロチドリが波打ち際をちょこちょこ走る'); }
       if (dist < 7) { b.state = 'run'; b.t = 0; b.face = Math.atan2(-dx, -dz) + Math.PI + (Math.random() - .5) * 0.8; }
     }
@@ -2105,12 +2200,12 @@ function updateCreatures(dt) {
       for (const w of b.m.wings) w.pivot.rotation.z = w.sx * Math.sin(b.t * 28) * 0.9;
       if (b.t > 7) spawnPlover(b, false);
     }
-    if (run) { b.x += -Math.sin(b.face) * run * dt; b.z += -Math.cos(b.face) * run * dt; b.x = Math.min(b.x, shoreX(b.z) + 0.6); }
-    if (b.state !== 'fly') b.y = 0;
-    const gy = Math.max(heightAt(b.x, b.z), 0) + 0.11;
+    if (run) { b.x += -Math.sin(b.face) * run * dt; b.z += -Math.cos(b.face) * run * dt; b.x = Math.min(b.x, shoreX(b.z) + 0.6); if (b.state === 'run' || b.state === 'follow') b.x = Math.min(b.x, edgeX - 0.3); }
+    if (b.state !== 'fly') { b.y = 0; b.x = Math.max(b.x, shoreX(b.z) - 8); }
+    const gy = Math.max(heightAt(b.x, b.z), b.state === 'fly' ? 0 : lev) + 0.11;   // never sinks into the swash
     b.g.position.set(b.x, gy + b.y + (run ? Math.abs(Math.sin(b.t * 30)) * 0.01 : 0), b.z);
     b.g.rotation.y = b.face;
-    b.g.rotation.x = b.state === 'idle' ? Math.max(0, Math.sin(b.peck * 1.3)) > 0.93 ? 0.5 : 0 : 0;
+    b.g.rotation.x = b.state === 'idle' || (b.state === 'follow' && !b.moving) ? Math.max(0, Math.sin(b.peck * b.peckRate)) > 0.93 ? 0.5 : 0 : 0;
     if (b.state !== 'fly' && (dist > 90 || (b.z - player.z) > 30)) spawnPlover(b, false);
   }
   // terns circling overhead
@@ -2330,13 +2425,19 @@ function frame() {
       tower.s = step.s0 + (step.s1 - step.s0) * e;
       const q = pathAt(tower.s);
       player.x = q.x; player.z = q.z + tower.off; tower.y = q.y;
-      if (step.offX !== undefined) { const k = 1 - e; player.x += step.offX * k; player.z += step.offZ * k; tower.y += step.offY * k; }
+      if (step.offX !== undefined) { const k = step.kA !== undefined ? step.kA + (step.kB - step.kA) * e : 1 - e; player.x += step.offX * k; player.z += step.offZ * k; tower.y += step.offY * k; }
       const inside = tower.s > towerPath.sIn - 0.3 && tower.s < towerPath.sOut + 0.3;
       if (step.pano && autoMode && !(jet.active && jet.body.visible && jet.watchStart && worldTime - jet.watchStart < 30)) {   // deck march: step 1 faces the right end of the beach, steps 2-16 sweep one full circle
         if (step.pano === 1) {
           const fz = 200, want = Math.atan2(-(shoreX(player.z + fz) - player.x), -fz), d = Math.atan2(Math.sin(want - step.yaw0), Math.cos(want - step.yaw0));
           player.yaw = step.yaw0 + d * e;
-        } else player.yaw += (TAU / 15) * (t - (step.prevT ?? 0));
+        } else if (!tower.panoDone) {
+          // a full circle: 24° a step over the land, 12° a step while the sea is in view
+          const fx = -Math.sin(player.yaw), slow = 1 - 0.5 * smooth(-0.15, 0.15, fx);
+          let dA = (TAU / 15) * slow * (t - (step.prevT ?? 0));
+          if (tower.panoAng + dA >= TAU) { dA = TAU - tower.panoAng; tower.panoDone = true; }
+          tower.panoAng += dA; player.yaw += dA;
+        }
         step.prevT = t;
       }
       if (!inside && !step.pano && Math.hypot(q.dx, q.dz) > 0.01) {          // face the way the steps go (not while marching on the deck)
@@ -2351,7 +2452,7 @@ function frame() {
     if (step.t >= 1) {
       if (step.path) {
         if (tower.mode === 'up' && tower.s >= towerPath.total - 0.01) {
-          tower.mode = 'top'; queued = null; tower.turn = !autoMode; tower.topSteps = 0;
+          tower.mode = 'top'; queued = null; tower.turn = !autoMode; tower.topSteps = 0; tower.panoAng = 0; tower.panoDone = false;
           say(autoMode ? '展望台に着きました。足踏みを続けると、ぐるりと見わたしてからおります' : '展望台に着きました。ドラッグで見わたせます。J・K でおります', 5000);
         } else if (tower.mode === 'down' && tower.s <= 0.01) {
           tower.mode = 'free'; tower.cool = true; queued = null; tower.lookUp = 1.8; towerDone.add(Math.round((player.z - TZ) / PERIOD));
@@ -2420,6 +2521,11 @@ function frame() {
   const ws = waveState(worldTime);
   swashUniforms.uTime.value = worldTime; swashUniforms.uLevel.value = ws.level; swashUniforms.uFoamAmt.value = ws.foam;
   swashUniforms.uBand.value = ws.band; swashUniforms.uBandAmt.value = ws.bandAmt; swashUniforms.uCycle.value = ws.n;
+  { // wet-sand marks of the last two waves that have already reached their highest point
+    const k = ws.p >= 0.3 ? 0 : 1, n1 = ws.n - k, n2 = n1 - 1, a1 = (ws.p - 0.3 + k) * WAVE_T;
+    swashUniforms.uPk.value.set(0.02 + 0.26 * waveAmp(n1), 0.02 + 0.26 * waveAmp(n2));
+    swashUniforms.uAge.value.set(a1, a1 + WAVE_T); swashUniforms.uCyc.value.set(n1, n2);
+  }
   oceanMat.uniforms.uTime.value = worldTime;
   ocean.position.set(player.x, 0, player.z);
   let dirty = false;
