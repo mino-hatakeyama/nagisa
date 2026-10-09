@@ -1617,7 +1617,7 @@ function spawnTern(b) {
 
 /* ================= audio ================= */
 let jetGain = null;
-let actx = null, master = null, surfGain, surfFilter, surfPan, windGain, stepBufs = [], splashBufs = [], muted = false;
+let actx = null, master = null, surfGain, surfFilter, surfPan, surfFar, surfFarLP, windGain, stepBufs = [], splashBufs = [], muted = false;
 let nextCrash = 0, nextHiss = 0;
 function makeCrunch(wet) {
   const sr = actx.sampleRate, len = Math.floor(sr * (wet ? 0.5 : 0.32)), buf = actx.createBuffer(1, len, sr), d = buf.getChannelData(0);
@@ -1653,7 +1653,10 @@ function initAudio() {
   loadPasha();
   const nb = noiseBuffer(6);
   surfPan = actx.createStereoPanner ? actx.createStereoPanner() : actx.createGain();
-  surfPan.connect(master);
+  // height above the beach: the surf grows fainter and duller as you climb the tower
+  surfFarLP = actx.createBiquadFilter(); surfFarLP.type = 'lowpass'; surfFarLP.frequency.value = 18000; surfFarLP.Q.value = 0.5;
+  surfFar = actx.createGain(); surfFar.gain.value = 1;
+  surfPan.connect(surfFarLP).connect(surfFar).connect(master);
   const s1 = actx.createBufferSource(); s1.buffer = nb; s1.loop = true;
   surfFilter = actx.createBiquadFilter(); surfFilter.type = 'lowpass'; surfFilter.frequency.value = 500; surfFilter.Q.value = 0.4;
   surfGain = actx.createGain(); surfGain.gain.value = 0.05;
@@ -2036,19 +2039,60 @@ const turtle = (() => {
   const rl = [flip(0.13, 0.08, -0.19, 0.1, 0.46), flip(0.13, 0.08, 0.19, 0.1, 0.46)];
   g.visible = false; scene.add(g);
   // the crawl track behind her: a strip of flipper marks pressed into the sand, following the ground
-  const cv = document.createElement('canvas'); cv.width = 128; cv.height = 128;
-  const cx = cv.getContext('2d');
-  cx.fillStyle = 'rgba(40,34,26,0.4)'; cx.fillRect(34, 0, 60, 128);                       // plastron drag
-  cx.strokeStyle = 'rgba(30,25,18,0.75)'; cx.lineWidth = 9; cx.lineCap = 'round';
-  for (const yy of [8, 72]) for (const sx of [-1, 1]) {                                     // paired flipper strokes
-    cx.beginPath(); cx.moveTo(64 + sx * 34, yy + 10); cx.lineTo(64 + sx * 58, yy + 34); cx.stroke();
-    cx.beginPath(); cx.moveTo(64 + sx * 30, yy + 30); cx.lineTo(64 + sx * 52, yy + 50); cx.stroke();
+  // the crawl track: a height field of flipper grooves, the plastron's drag furrow and the sand pushed up at the sides,
+  // turned into a colour map and a normal map so the marks catch the light like real dents in the sand
+  const TW = 128, TH = 512, Hf = new Float32Array(TW * TH), tr = mulberry32(77);
+  const segs = [];                                             // eight strokes' worth, each a little different, so the pattern never looks stamped
+  for (let n = 0; n < 8; n++) {
+    const yy = n * 64 + (tr() - .5) * 10;
+    for (const sx of [-1, 1]) {
+      const L = 0.85 + tr() * 0.35, dy = (tr() - .5) * 8, dep = 0.65 + tr() * 0.5, sk = (tr() - .5) * 0.04;
+      segs.push([0.5 + sx * (0.27 + sk), (yy + 10 + dy) / TH, 0.5 + sx * (0.27 + sk + 0.18 * L), (yy + 10 + dy + 24 * L) / TH, dep]);
+      if (tr() < 0.85) segs.push([0.5 + sx * (0.24 + sk), (yy + 30 + dy) / TH, 0.5 + sx * (0.24 + sk + 0.17 * L), (yy + 30 + dy + 20 * L) / TH, dep * (0.6 + tr() * 0.4)]);
+    }
   }
-  const tt = new THREE.CanvasTexture(cv); tt.wrapT = THREE.RepeatWrapping; tt.colorSpace = THREE.SRGBColorSpace;
+  const segD = (u, v, s4) => {             // distance to a stroke, wrapping along the track
+    let best = 9;
+    for (const dv of [-1, 0, 1]) {
+      const ax = s4[0], ay = s4[1] + dv, bx = s4[2], by = s4[3] + dv, px = u - ax, py = (v - ay) * (TH / TW) * 0.68, qx = bx - ax, qy = (by - ay) * (TH / TW) * 0.68;
+      const t = Math.max(0, Math.min(1, (px * qx + py * qy) / (qx * qx + qy * qy)));
+      best = Math.min(best, Math.hypot(px - qx * t, py - qy * t));
+    }
+    return best;
+  };
+  for (let j = 0; j < TH; j++) for (let i = 0; i < TW; i++) {
+    const u = i / (TW - 1), v = j / TH;
+    const wob = 0.03 * Math.sin(v * TAU * 3 + 1.1) + 0.02 * Math.sin(v * TAU * 7 + 0.3);           // the furrow meanders a little
+    let h = -(0.35 + 0.15 * Math.sin(v * TAU * 5 + 2)) * Math.exp(-Math.pow((u - 0.5 - wob) / 0.15, 2));   // plastron furrow
+    h += 0.3 * Math.exp(-Math.pow((u - 0.5) / 0.04, 2)) * 0.4;                                 // a faint crest along its middle
+    let dmin = 9, dep = 1; for (const s4 of segs) { const dd = segD(u, v, s4); if (dd < dmin) { dmin = dd; dep = s4[4]; } }
+    const w = 0.032;
+    h += dep * (-1.0 * Math.exp(-Math.pow(dmin / w, 2)) + 0.45 * Math.exp(-Math.pow((dmin - 1.9 * w) / (0.8 * w), 2)));   // groove with a lip of thrown sand
+    const e1 = 0.07 + 0.02 * Math.sin(v * TAU * 4 + 0.7), e2 = 0.93 + 0.02 * Math.sin(v * TAU * 3 + 2.4);
+    h += (0.3 + 0.12 * Math.sin(v * TAU * 6)) * (Math.exp(-Math.pow((u - e1) / 0.045, 2)) + Math.exp(-Math.pow((u - e2) / 0.045, 2)));   // berms at the edges
+    h += 0.06 * Math.sin(i * 1.7 + j * 0.9) * Math.sin(j * 2.3 - i * 0.6);                      // grain
+    Hf[j * TW + i] = h;
+  }
+  const cvC = document.createElement('canvas'), cvN = document.createElement('canvas');
+  cvC.width = cvN.width = TW; cvC.height = cvN.height = TH;
+  const idC = cvC.getContext('2d').createImageData(TW, TH), idN = cvN.getContext('2d').createImageData(TW, TH);
+  const Hat = (i, j) => Hf[((j + TH) % TH) * TW + Math.max(0, Math.min(TW - 1, i))];
+  for (let j = 0; j < TH; j++) for (let i = 0; i < TW; i++) {
+    const k = (j * TW + i) * 4, h = Hat(i, j), u = i / (TW - 1);
+    const nx = (Hat(i - 1, j) - Hat(i + 1, j)) * 2.2, ny = (Hat(i, j - 1) - Hat(i, j + 1)) * 2.2, nl = Math.hypot(nx, ny, 1);
+    idN.data[k] = (nx / nl * 0.5 + 0.5) * 255; idN.data[k + 1] = (ny / nl * 0.5 + 0.5) * 255; idN.data[k + 2] = (1 / nl * 0.5 + 0.5) * 255; idN.data[k + 3] = 255;
+    const f = 1 + 0.2 * Math.max(-1, Math.min(0.6, h));                                        // hollows a bit darker, thrown sand a bit lighter
+    idC.data[k] = 186 * f; idC.data[k + 1] = 172 * f; idC.data[k + 2] = 158 * f;
+    const edge = Math.min(1, u / 0.06) * Math.min(1, (1 - u) / 0.06);
+    idC.data[k + 3] = 255 * edge * Math.min(0.92, 0.3 + 0.85 * Math.abs(h));
+  }
+  cvC.getContext('2d').putImageData(idC, 0, 0); cvN.getContext('2d').putImageData(idN, 0, 0);
+  const tt = new THREE.CanvasTexture(cvC); tt.wrapT = THREE.RepeatWrapping; tt.colorSpace = THREE.SRGBColorSpace;
+  const tn = new THREE.CanvasTexture(cvN); tn.wrapT = THREE.RepeatWrapping;
   const N = 120, tp = new Float32Array((N + 1) * 2 * 3), tuv = new Float32Array((N + 1) * 2 * 2), idx = [];
-  for (let i = 0; i < N; i++) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  for (let i = 0; i < N; i++) { const a = i * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }   // wound so the normals face up
   const tg = new THREE.BufferGeometry(); tg.setAttribute('position', new THREE.BufferAttribute(tp, 3)); tg.setAttribute('uv', new THREE.BufferAttribute(tuv, 2)); tg.setIndex(idx);
-  const track = new THREE.Mesh(tg, new THREE.MeshStandardMaterial({ map: tt, transparent: true, depthWrite: false, roughness: 1, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+  const track = new THREE.Mesh(tg, new THREE.MeshStandardMaterial({ map: tt, normalMap: tn, normalScale: new THREE.Vector2(1.6, 1.6), transparent: true, depthWrite: false, roughness: 1, envMapIntensity: 0.6, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
   track.frustumCulled = false; track.visible = false; scene.add(track);
   const col = { x: 0, z: TURTLE.z, r: 0 }; colliders.push(col);
   return { g, head, fl, rl, track, tg, tp, tuv, N, col, state: 'wait', d: TURTLE.d0, t: 0, said: 0 };
@@ -2091,7 +2135,7 @@ function updateTurtle(dt) {
   if (T.track.visible && (fwdNow !== T.d || T.track.userData.z !== z)) {
     T.track.userData.z = z;
     for (let i = 0; i <= T.N; i++) {
-      const xi = a + (b - a) * i / T.N, v = (a - xi) / 0.75;
+      const xi = a + (b - a) * i / T.N, v = (a - xi) / 3.0;
       for (let k = 0; k < 2; k++) {
         const zi = z + (k ? 0.55 : -0.55), j = (i * 2 + k);
         T.tp[j * 3] = xi; T.tp[j * 3 + 1] = heightAt(xi, zi) + 0.012; T.tp[j * 3 + 2] = zi;
@@ -2552,7 +2596,11 @@ function frame() {
   if (actx) {
     scheduleWaves(); ambientBirds(dt);
     if (surfPan.pan) surfPan.pan.value = Math.cos(player.yaw) * 0.65;
-    windGain.gain.value = 0.016 + 0.014 * (Math.sin(worldTime * 0.23) * 0.5 + 0.5) * (Math.sin(worldTime * 0.61 + 1) * 0.5 + 0.5);
+    const base = heightAt(TOWER_E.x, TOWER_E.z), topY = pathAt(towerPath.total).y;
+    const up = tower.mode !== 'free' ? Math.max(0, Math.min(1, (tower.y - base) / Math.max(1, topY - base))) : 0;
+    surfFar.gain.setTargetAtTime(1 - 0.7 * up, actx.currentTime, 0.4);                 // about a third as loud on the deck
+    surfFarLP.frequency.setTargetAtTime(18000 * Math.pow(900 / 18000, up), actx.currentTime, 0.4);   // and the hiss softens
+    windGain.gain.value = (0.016 + 0.014 * (Math.sin(worldTime * 0.23) * 0.5 + 0.5) * (Math.sin(worldTime * 0.61 + 1) * 0.5 + 0.5)) * (1 + 1.2 * up);   // a little more breeze up high
   }
 
   stepsEl.textContent = stepCount;
