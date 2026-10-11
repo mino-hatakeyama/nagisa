@@ -269,6 +269,19 @@ const skyMat = new THREE.ShaderMaterial({
     float sn(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f*f*(3.0-2.0*f);
       return mix(mix(sh2(i), sh2(i+vec2(1,0)), u.x), mix(sh2(i+vec2(0,1)), sh2(i+vec2(1,1)), u.x), u.y); }
     float sfbm(vec2 p){ float v = 0.0, a = 0.5; for (int i = 0; i < 5; i++){ v += a*sn(p); p = p*2.03 + 7.1; a *= 0.5; } return v; }
+    // scattered craters for the moon: bright rims and slightly darker floors, as they look under a full moon
+    float craters(vec2 p, float scale, float seed){
+      vec2 g = floor(p*scale), f = fract(p*scale); float acc = 0.0;
+      for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+        vec2 n = vec2(float(i), float(j)), id = g + n + seed;
+        float h = sh2(id); if (h < 0.42) continue;
+        vec2 c = n + 0.2 + 0.6*vec2(sh2(id + 3.1), sh2(id + 7.7));
+        float r = 0.12 + 0.3*sh2(id + 11.3)*sh2(id + 5.9), d = length(f - c);
+        float b = pow(sh2(id + 2.2), 3.0);                                    // most are faint, a few are fresh and bright
+        acc += b*(0.8*pow(smoothstep(r, 0.0, d), 2.0) + 0.25*exp(-pow((d - r)/(0.3*r), 2.0))) - 0.05*smoothstep(r, 0.5*r, d);
+      }
+      return acc;
+    }
     float stars(vec3 d, float scale, float thr){
       vec3 p = d*scale, c = floor(p), f = fract(p) - 0.5;
       float h = sh(c); if (h < thr) return 0.0;
@@ -312,21 +325,45 @@ const skyMat = new THREE.ShaderMaterial({
         float lane = smoothstep(0.48, 0.62, sfbm(vec2(ang*7.0 + 3.0, across*34.0)))*exp(-across*across/0.005);
         float core = 0.6 + 0.4*cos(ang - 0.6);
         vec3 mw = mix(vec3(0.42, 0.5, 0.78), vec3(0.95, 0.85, 0.7), core*band) * glow * (1.0 - 0.8*lane) * 0.14;
-        float st = stars(d, 170.0, 0.982)*2.6 + stars(d, 380.0, 0.988)*1.3 + stars(d, 700.0, 0.955)*0.37*band;
+        float st = stars(d, 170.0, 0.982)*2.6 + stars(d, 380.0, 0.988)*1.3;
         st *= 0.85 + 0.15*sin(dot(d, vec3(931.0, 577.0, 433.0)));
-        col += uNight*hz*(mw + vec3(0.92, 0.95, 1.0)*st);
+        col += uNight*hz*vec3(0.92, 0.95, 1.0)*st;                       // (no Milky Way under a full moon)
         // moon: disc with phase shading, faint earthshine, halo
-        float md = dot(d, uMoon), rad = 0.03;
+        float md = dot(d, uMoon), rad = 0.034;
         col += uNight*uMoonGlow*(vec3(0.5, 0.6, 0.85)*pow(max(md, 0.0), 260.0)*0.9 + vec3(0.25, 0.32, 0.5)*pow(max(md, 0.0), 12.0)*0.18);
         if (md > cos(rad)) {
           vec3 mx = normalize(cross(vec3(0.0, 1.0, 0.0), uMoon)), my = cross(uMoon, mx);
-          float u = dot(d, mx)/sin(rad), v = dot(d, my)/sin(rad), r2 = u*u + v*v;
+          float u = -dot(d, mx)/sin(rad), v = dot(d, my)/sin(rad), r2 = u*u + v*v;   // u to the right, v up, as seen
           float z = sqrt(max(0.0, 1.0 - r2));
           vec3 L = vec3(sin(uPhase), 0.0, cos(uPhase));
           float lit = smoothstep(-0.06, 0.06, dot(vec3(u, v, z), L));
-          float maria = 0.78 + 0.22*sfbm(vec2(u, v)*2.6 + 4.0);
+          // the near side as we see it: dark maria (Procellarum, Imbrium, Serenitatis, Tranquillitatis, Crisium, Fecunditatis,
+          // Nectaris, Nubium, Humorum, Frigoris) on bright highlands, with the rayed craters Tycho and Copernicus
+          vec2 q = vec2(u, v) + 0.16*(vec2(sfbm(vec2(u, v)*2.2 + 1.0), sfbm(vec2(u, v)*2.2 + 7.0)) - 0.5)
+                 + 0.07*(vec2(sfbm(vec2(u, v)*7.0 + 4.0), sfbm(vec2(u, v)*7.0 + 9.0)) - 0.5);   // ragged shorelines
+          #define MARE(cx, cy, rx, ry) m = 1.0 - (1.0 - m)*(1.0 - smoothstep(1.0, 0.6, length((q - vec2(cx, cy))/(vec2(rx, ry)*1.12))))
+          float m = 0.0;
+          MARE(-0.58, 0.18, 0.3, 0.42); MARE(-0.62, -0.18, 0.24, 0.3); MARE(-0.4, 0.3, 0.22, 0.22);   // Oceanus Procellarum
+          MARE(-0.22, 0.47, 0.3, 0.22); MARE(-0.05, 0.36, 0.14, 0.14);                                 // Imbrium
+          MARE(0.15, 0.46, 0.18, 0.17); MARE(0.28, 0.2, 0.2, 0.18); MARE(0.42, 0.06, 0.14, 0.14);      // Serenitatis, Tranquillitatis
+          MARE(0.7, 0.32, 0.12, 0.14);                                                                  // Crisium
+          MARE(0.6, -0.12, 0.14, 0.19); MARE(0.42, -0.3, 0.1, 0.1);                                     // Fecunditatis, Nectaris
+          MARE(-0.18, -0.34, 0.22, 0.16); MARE(-0.48, -0.4, 0.12, 0.11); MARE(-0.02, 0.06, 0.14, 0.1);  // Nubium, Humorum, central bay
+          MARE(0.0, 0.72, 0.42, 0.055);                                                                  // Frigoris
+          m *= 0.72 + 0.28*sfbm(vec2(u, v)*4.0 + 2.0);
+          float maria = mix(1.0, 0.4, m) * (0.9 + 0.1*sfbm(vec2(u, v)*14.0 + 3.0));
+          vec2 ty = vec2(u, v) - vec2(-0.12, -0.72), cp = vec2(u, v) - vec2(-0.25, 0.12);
+          float rays = pow(abs(sin(atan(ty.y, ty.x)*9.0 + sfbm(ty*4.0)*3.0)), 8.0) * smoothstep(1.1, 0.1, length(ty)) * 0.16;
+          maria += rays + 0.5*smoothstep(0.06, 0.0, length(ty)) + 0.3*smoothstep(0.05, 0.0, length(cp)) + 0.12*smoothstep(0.35, 0.0, length(cp))*sfbm(cp*20.0);
+          vec2 uv = vec2(u, v);
+          maria *= 0.9 + 0.18*sfbm(uv*22.0 + 5.0);                              // fine mottling of the surface
+          maria *= 1.0 - 0.22*m*smoothstep(0.35, 0.7, sfbm(uv*6.0 + 9.0));      // darker lava flows within the maria
+          maria *= 1.0 + (craters(uv, 7.0, 0.0)*0.8 + craters(uv, 16.0, 31.0)*0.6 + craters(uv, 38.0, 77.0)*0.45) * (1.0 - 0.6*m);
+          vec2 kp = uv - vec2(-0.47, 0.17), ar = uv - vec2(-0.6, 0.31);         // Kepler's small ray system, brilliant Aristarchus
+          maria += pow(abs(sin(atan(kp.y, kp.x)*7.0 + sfbm(kp*6.0)*2.5)), 10.0) * smoothstep(0.3, 0.0, length(kp)) * 0.06 + 0.35*smoothstep(0.03, 0.0, length(ar));
+          maria *= 0.8 + 0.2*z;                                               // a touch of limb darkening
           float edge = uNight*smoothstep(1.0, 0.92, r2);
-          col = mix(col, vec3(1.0, 0.97, 0.9)*7.0*maria, edge*lit);          // the lit part of the disc
+          col = mix(col, vec3(1.0, 0.97, 0.9)*1.15*maria, edge*lit);          // the lit part of the disc
           col = mix(col, col*0.55 + vec3(0.02, 0.025, 0.04), edge*(1.0 - lit)*0.8);   // the dark part only dims the sky a little (earthshine)
         }
       }
@@ -739,10 +776,10 @@ function waveState(t) {
 /* ================= clouds (fair-weather cumulus) ================= */
 const cloudMat = new THREE.ShaderMaterial({
   transparent: true, depthWrite: false, side: THREE.DoubleSide,
-  uniforms: { uTime: { value: 0 }, uSun: { value: sunDir.clone() }, uCam: { value: new THREE.Vector3() }, uBright: { value: new THREE.Color(2.2, 2.2, 2.15) }, uShade: { value: new THREE.Color(0.62, 0.7, 0.86) }, uAlpha: { value: 1 }, uCov: { value: 0 } },
+  uniforms: { uTime: { value: 0 }, uSun: { value: sunDir.clone() }, uCam: { value: new THREE.Vector3() }, uBright: { value: new THREE.Color(2.2, 2.2, 2.15) }, uShade: { value: new THREE.Color(0.62, 0.7, 0.86) }, uAlpha: { value: 1 }, uCov: { value: 0 }, uShift: { value: new THREE.Vector2() } },
   vertexShader: `varying vec3 vW; void main(){ vec4 w = modelMatrix*vec4(position,1.); vW = w.xyz; gl_Position = projectionMatrix*viewMatrix*w; }`,
   fragmentShader: `
-    uniform float uTime, uAlpha, uCov; uniform vec3 uSun, uCam, uBright, uShade; varying vec3 vW;
+    uniform float uTime, uAlpha, uCov; uniform vec3 uSun, uCam, uBright, uShade; uniform vec2 uShift; varying vec3 vW;
     ${GLSL_NOISE}
     float dens(vec2 p){
       vec2 q = vec2(vnoise(p*1.7), vnoise(p*1.7 + 7.3));
@@ -751,7 +788,7 @@ const cloudMat = new THREE.ShaderMaterial({
       return c*(0.55 + 0.6*blobs);
     }
     void main(){
-      vec2 p = vW.xz*0.0012 + vec2(uTime*0.004, uTime*0.0015);
+      vec2 p = (vW.xz - uShift)*0.0012 + vec2(uTime*0.004, uTime*0.0015);   // uShift undoes the beach's loop, so the sky carries on unbroken
       float d = dens(p);
       float cov = smoothstep(0.50 + uCov, 0.56 + uCov, d);
       vec2 sd = normalize(uSun.xz + 1e-4)*0.02;
@@ -842,6 +879,7 @@ function showJetEta() {            // countdown to the moment the airliner passe
 }
 function updateJet(dt) {
   showJetEta();
+  if (!jet.active && jetGain) { jetGain.gain.setTargetAtTime(0, actx.currentTime, 0.5); jetGain2.gain.setTargetAtTime(0, actx.currentTime, 0.5); }
   if (!jet.active) {
     jet.next -= dt;
     if (jet.next < 0) launchJet();
@@ -888,8 +926,20 @@ function updateJet(dt) {
     for (const tr of trails) { tr.pts.length = 0; tr.mesh.geometry.setDrawRange(0, 0); }
   }
   if (jetGain) {
-    const dist = Math.hypot(px - player.x, z + jet.group.position.z - player.z, jet.alt);
-    jetGain.gain.value = jet.body.visible ? 0.05 * Math.pow(Math.max(0, 1 - dist / 4500), 2) : 0;
+    // sound takes a few seconds to come down from cruising height, so we hear where the plane *was*
+    const gz = jet.group.position.z;
+    let dRet = Math.hypot(px - player.x, z + gz - player.z, jet.alt);
+    const back = dRet / 340, pr = px - jet.dx * jet.speed * back, zr = z - jet.dz * jet.speed * back + gz;
+    const rx = pr - player.x, rz = zr - player.z; dRet = Math.hypot(rx, rz, jet.alt);
+    const audible = smooth(0, 3, jet.t - dRet / 340);                                    // nothing until the first sound has arrived
+    const loud = audible * Math.pow(Math.max(0, 1 - dRet / 8000), 2) / (1 + Math.pow(dRet / 2600, 2));
+    const vr = (rx * jet.dx + rz * jet.dz) / Math.max(1, Math.hypot(rx, rz, jet.alt));     // >0 moving away
+    const now = actx.currentTime;
+    jetGain.gain.setTargetAtTime(1.1 * loud, now, 0.3);
+    jetGain2.gain.setTargetAtTime(0.32 * loud * (1 - 0.5 * Math.max(0, vr)), now, 0.3);  // the hiss is brighter while it approaches
+    jetLP.frequency.setTargetAtTime(520 * (1 - 0.35 * vr), now, 0.4);   // high enough to come through laptop speakers too
+    jetBP.frequency.setTargetAtTime(900 * (1 - 0.4 * vr), now, 0.4);
+    if (jetPan.pan) jetPan.pan.setTargetAtTime(Math.max(-0.8, Math.min(0.8, (rx * Math.cos(player.yaw) - rz * Math.sin(player.yaw)) / Math.max(1, Math.hypot(rx, rz)) * Math.min(1, Math.hypot(rx, rz) / jet.alt))), now, 0.3);
   }
 }
 
@@ -1617,6 +1667,7 @@ function spawnTern(b) {
 
 /* ================= audio ================= */
 let jetGain = null;
+let jetPan, jetLP, jetBP, jetGain2;
 let actx = null, master = null, surfGain, surfFilter, surfPan, surfFar, surfFarLP, windGain, stepBufs = [], splashBufs = [], muted = false;
 let nextCrash = 0, nextHiss = 0;
 function makeCrunch(wet) {
@@ -1669,10 +1720,16 @@ function initAudio() {
   const f3 = actx.createBiquadFilter(); f3.type = 'bandpass'; f3.frequency.value = 700; f3.Q.value = 0.5;
   windGain = actx.createGain(); windGain.gain.value = 0.02;
   s3.connect(f3).connect(windGain).connect(master); s3.start(0, 4.1);
-  const s4 = actx.createBufferSource(); s4.buffer = nb; s4.loop = true; s4.playbackRate.value = 0.5;   // distant jet rumble
-  const f4 = actx.createBiquadFilter(); f4.type = 'lowpass'; f4.frequency.value = 320;
+  // airliner passing high overhead: a deep roar plus a softer jet hiss, panned to where the sound comes from
+  jetPan = actx.createStereoPanner ? actx.createStereoPanner() : actx.createGain(); jetPan.connect(master);
+  const s4 = actx.createBufferSource(); s4.buffer = nb; s4.loop = true; s4.playbackRate.value = 0.5;
+  jetLP = actx.createBiquadFilter(); jetLP.type = 'lowpass'; jetLP.frequency.value = 320; jetLP.Q.value = 0.7;
   jetGain = actx.createGain(); jetGain.gain.value = 0;
-  s4.connect(f4).connect(jetGain).connect(master); s4.start(0, 1.3);
+  s4.connect(jetLP).connect(jetGain).connect(jetPan); s4.start(0, 1.3);
+  const s5 = actx.createBufferSource(); s5.buffer = nb; s5.loop = true; s5.playbackRate.value = 0.9;
+  jetBP = actx.createBiquadFilter(); jetBP.type = 'bandpass'; jetBP.frequency.value = 900; jetBP.Q.value = 0.8;
+  jetGain2 = actx.createGain(); jetGain2.gain.value = 0;
+  s5.connect(jetBP).connect(jetGain2).connect(jetPan); s5.start(0, 3.7);
   nextCrash = Math.floor(worldTime / WAVE_T) + (worldTime / WAVE_T % 1 > 0.72 ? 1 : 0);
   nextHiss = Math.floor(worldTime / WAVE_T) + 1;
 }
@@ -1848,25 +1905,35 @@ let lastMoveT = performance.now();
 let autoMode = false, altRule = true, lastDragT = -9, towerDone = new Set();
 // 足踏みモード: a gentle route along the beach, now and then down to the water's edge, through the sea arch,
 // and up the dune trail to the tower once per loop.
+// the course changes a little each lap: 1st as before, 2nd behind the loungers and a wide swing up to the tower,
+// 3rd with different paddling spots and passing outside (landward of) the sea arch; then it repeats
+let lapNo = 1;
+const lapVar = () => ((lapNo - 1) % 3 + 3) % 3;
 function routeD(z) {
-  const zb = baseZ(z), win = (c, w) => { const t = Math.abs(zb - c); return 1 - smooth(w * 0.5, w, t); };
+  const zb = baseZ(z), win = (c, w) => { const t = Math.abs(zb - c); return 1 - smooth(w * 0.5, w, t); }, v = lapVar();
   let d = -7 + 2.2 * Math.sin(z * KZ * 7 + 0.5);
-  for (const c of [-300, -470, -690]) d += (0.6 - d) * win(c, 28);          // ankle-deep stretches (splash, small fish)
-  d += (-2.5 - d) * win(-165, 26);                                            // walk through the sea arch (a little right of centre: more headroom)
+  for (const c of v === 2 ? [-250, -420, -560] : [-300, -470, -690]) d += (0.6 - d) * win(c, 28);   // ankle-deep stretches (splash, small fish)
+  if (v === 1) d += (-15.5 - d) * win(PARASOL.z, 34);                         // 2nd lap: round the back of the loungers
+  if (v === 2) d += (-13.5 - d) * win(-165, 30);                              // 3rd lap: past the arch on its landward side
+  else d += (-2.5 - d) * win(-165, 26);                                       // walk through the sea arch (a little right of centre: more headroom)
   return d;
 }
 // the way up to the tower as one smooth curve: a wide arc off the beach onto the trail, the trail itself,
 // and a gentle bend at its end that lines up with the first tread
 let towerCurve = null;
-function buildTowerCurve() {
+function buildTowerCurve(wide) {
   const pts = [], cub = (p0, p1, p2, p3, n) => { for (let i = pts.length ? 1 : 0; i <= n; i++) { const t = i / n, u = 1 - t;
     pts.push({ x: u*u*u*p0.x + 3*u*u*t*p1.x + 3*u*t*t*p2.x + t*t*t*p3.x, z: u*u*u*p0.z + 3*u*u*t*p1.z + 3*u*t*t*p2.z + t*t*t*p3.z }); } };
   const tl = Math.hypot(TOWER_E.x - TRAIL.x, TOWER_E.z - TRAIL.z), ut = { x: (TOWER_E.x - TRAIL.x) / tl, z: (TOWER_E.z - TRAIL.z) / tl };
   const sl = Math.hypot(TOWER_M.x - TOWER_E.x, TOWER_M.z - TOWER_E.z), us = { x: (TOWER_M.x - TOWER_E.x) / sl, z: (TOWER_M.z - TOWER_E.z) / sl };
-  const z0 = TRAIL.z + 26, b0 = { x: shoreX(z0) + routeD(z0), z: z0 };
+  const z0 = TRAIL.z + (wide ? 40 : 26), b0 = { x: shoreX(z0) + routeD(z0), z: z0 };
   const at = (p, u, k) => ({ x: p.x + u.x * k, z: p.z + u.z * k });
   const r1 = { x: shoreX(z0 - 3) + routeD(z0 - 3), z: z0 - 3 }, rl = Math.hypot(r1.x - b0.x, 3), ur = { x: (r1.x - b0.x) / rl, z: -3 / rl };
-  cub(b0, at(b0, ur, 10), at(TRAIL, ut, -9), TRAIL, 40);               // arc from the shoreline route onto the trail
+  if (wide) {                                                                     // 2nd lap: drift down toward the water first, then sweep round and up the trail
+    const zM = TRAIL.z + 16, M = { x: shoreX(zM) - 2.5, z: zM }, tM = { x: -0.3 / Math.hypot(0.3, 1), z: -1 / Math.hypot(0.3, 1) };
+    cub(b0, at(b0, ur, 6), at(M, tM, -6), M, 40);
+    cub(M, at(M, tM, 6), at(TRAIL, ut, -10), TRAIL, 40);
+  } else cub(b0, at(b0, ur, 10), at(TRAIL, ut, -9), TRAIL, 40);               // arc from the shoreline route onto the trail
   const f0 = at(TOWER_E, ut, -Math.min(5, tl * 0.4));
   cub(TRAIL, at(TRAIL, ut, 2), at(f0, ut, -2), f0, 20);                          // along the trail
   cub(f0, at(f0, ut, 2.4), at(TOWER_E, us, -2.4), TOWER_E, 24);                  // bend into the stair
@@ -1877,9 +1944,10 @@ function buildTowerCurve() {
 function routeYaw() {
   const id = Math.round((player.z - TZ) / PERIOD), off = id * PERIOD, zb = player.z - off;
   let tx, tz;
-  if (!towerCurve) towerCurve = buildTowerCurve();
-  if (!towerDone.has(id) && zb < towerCurve.z0 + 0.5 && zb > TZ - 3) {
-    const { pts, L } = towerCurve;
+  if (!towerCurve) towerCurve = [buildTowerCurve(false), buildTowerCurve(true)];
+  const tc = towerCurve[lapVar() === 1 ? 1 : 0];
+  if (!towerDone.has(id) && zb < tc.z0 + 0.5 && zb > TZ - 3) {
+    const { pts, L } = tc;
     let bi = 0, bd = 1e9;
     for (let i = 0; i < pts.length; i++) { const d = (pts[i].x - player.x) ** 2 + (pts[i].z - zb) ** 2; if (d < bd) { bd = d; bi = i; } }
     const want = L[bi] + 3.2;                                                    // look a few steps ahead along the curve
@@ -2386,7 +2454,7 @@ function applyTime(t) {
     // a thin crescent low over the sea: a faint glitter path, and a dark sky where the Milky Way shows well
     const el = THREE.MathUtils.degToRad(9);
     moonDir.set(0.82, 0, -0.57).normalize().multiplyScalar(Math.cos(el)); moonDir.y = Math.sin(el); moonDir.normalize();
-    u.uMoon.value.copy(moonDir); u.uPhase.value = 2.45; u.uMoonGlow.value = 0.35;
+    u.uMoon.value.copy(moonDir); u.uPhase.value = 0; u.uMoonGlow.value = 0.35;   // full moon
     const k = 0.6;
     u.uZen.value.setRGB(0.004 * k, 0.011 * k, 0.04 * k); u.uMid.value.setRGB(0.01 * k, 0.024 * k, 0.07 * k); u.uHor.value.setRGB(0.035 * k, 0.06 * k, 0.12 * k);
     lightDir.copy(moonDir);
@@ -2476,11 +2544,13 @@ function frame() {
           const fz = 200, want = Math.atan2(-(shoreX(player.z + fz) - player.x), -fz), d = Math.atan2(Math.sin(want - step.yaw0), Math.cos(want - step.yaw0));
           player.yaw = step.yaw0 + d * e;
         } else if (!tower.panoDone) {
-          // a full circle: 24° a step over the land, 12° a step while the sea is in view
-          const fx = -Math.sin(player.yaw), slow = 1 - 0.5 * smooth(-0.15, 0.15, fx);
-          let dA = (TAU / 15) * slow * (t - (step.prevT ?? 0));
-          if (tower.panoAng + dA >= TAU) { dA = TAU - tower.panoAng; tower.panoDone = true; }
-          tower.panoAng += dA; player.yaw += dA;
+          // gaze over the sea only: from the right end of the beach across to the left end, then back again (12° a step)
+          if (tower.panoBase === undefined) tower.panoBase = player.yaw;
+          let a = tower.panoAng + (Math.PI / 15) * (t - (step.prevT ?? 0));
+          if (a >= TAU) { a = TAU; tower.panoDone = true; }
+          tower.panoAng = a;
+          const want = tower.panoBase + (a <= Math.PI ? a : TAU - a);
+          player.yaw += Math.atan2(Math.sin(want - player.yaw), Math.cos(want - player.yaw)) * Math.min(1, dt * 6);   // eased, so it never snaps (e.g. after watching a plane)
         }
         step.prevT = t;
       }
@@ -2496,7 +2566,7 @@ function frame() {
     if (step.t >= 1) {
       if (step.path) {
         if (tower.mode === 'up' && tower.s >= towerPath.total - 0.01) {
-          tower.mode = 'top'; queued = null; tower.turn = !autoMode; tower.topSteps = 0; tower.panoAng = 0; tower.panoDone = false;
+          tower.mode = 'top'; queued = null; tower.turn = !autoMode; tower.topSteps = 0; tower.panoAng = 0; tower.panoDone = false; tower.panoBase = undefined;
           say(autoMode ? '展望台に着きました。足踏みを続けると、ぐるりと見わたしてからおります' : '展望台に着きました。ドラッグで見わたせます。J・K でおります', 5000);
         } else if (tower.mode === 'down' && tower.s <= 0.01) {
           tower.mode = 'free'; tower.cool = true; queued = null; tower.lookUp = 1.8; towerDone.add(Math.round((player.z - TZ) / PERIOD));
@@ -2510,13 +2580,25 @@ function frame() {
     player.z += dz; tower.off += dz; if (step) { step.fz += dz; step.tz += dz; }
     for (let i = 0; i < prints.length; i++) if (prints[i]) { prints[i].z += dz; writePrint(i); }
     printMesh.instanceMatrix.needsUpdate = true; shiftCreatures(dz);
+    cloudMat.uniforms.uShift.value.y += dz;                                     // clouds stay where they were in the sky
+    towerDone = new Set([...towerDone].map(id => id + Math.round(dz / PERIOD)));
+    lapNo = Math.max(1, lapNo + Math.round(dz / PERIOD));                       // walking on into the next stretch of beach = the next lap
+    if (autoMode && dz > 0) say(lapNo + '周目' + ['', '：パラソルの裏を通り、大きく回って塔へ', '：別の浅瀬と、アーチ岩の外側を歩きます'][lapVar()], 4200);   // keep 'already climbed' attached to the same tower, so the next ones are climbed too
   };
   if (player.z < -PERIOD) wrap(PERIOD); else if (player.z > PERIOD * 0.5) wrap(-PERIOD);
 
   {
     const free = !drag && performance.now() - lastDragT > 1500;
-    const easeYaw = (want, k) => { player.yaw += Math.atan2(Math.sin(want - player.yaw), Math.cos(want - player.yaw)) * Math.min(1, dt * k); };
-    const easePitch = (want, k) => { player.pitch += (want - player.pitch) * Math.min(1, dt * k); };
+    // ease the view like a soft spring: from rest it speeds up gently, is quickest midway, and settles without overshoot
+    const spring = (err, vKey, tKey, k) => {
+      if (worldTime - (player[tKey] ?? -9) > 0.2 || !free) player[vKey] = 0;   // a fresh start after a pause or a hand on the view
+      player[tKey] = worldTime;
+      const w = k * 1.25, h = Math.min(dt, 0.05);
+      player[vKey] += (w * w * err - 2 * w * player[vKey]) * h;
+      return player[vKey] * h;
+    };
+    const easeYaw = (want, k) => { player.yaw += spring(Math.atan2(Math.sin(want - player.yaw), Math.cos(want - player.yaw)), '_yv', '_yt', k); };
+    const easePitch = (want, k) => { player.pitch += spring(want - player.pitch, '_pv', '_pt', k); };
     // 足踏みモード: going down the spiral stair, look at your feet; afterwards lift the eyes again
     if (autoMode && tower.mode === 'down' && free) easePitch(0.78, 2.2);
     else if (autoMode && tower.mode === 'free' && tower.lookUp > 0) { tower.lookUp -= dt; if (free) easePitch(0.06, 2.0); }
