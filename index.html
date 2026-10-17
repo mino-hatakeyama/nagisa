@@ -1029,6 +1029,7 @@ function rockGeometry(seed, green) {
   return limestone(g, seed + 7, green ? sy * 0.9 : 0);
 }
 const colliders = []; // {x, z, r} (base period, z in [-PERIOD, 0))
+const rockSpots = []; // every rock, for keeping plants clear of them
 function addCollider(x, z, r) { colliders.push({ x, z, r }); }
 const archSpots = [];
 (function placeRocks() {
@@ -1056,6 +1057,7 @@ const archSpots = [];
       if (nearTower(x, z)) continue;
       e.set((r() - .5) * 0.25, r() * TAU, (r() - .5) * 0.25); q.setFromEuler(e); s.set(sc, sc, sc);
       if (sc > 0.8) addCollider(x, z, sc * 1.05);
+      rockSpots.push({ x, z, r: sc * 1.1 });
       p.set(x, heightAt(x, z) - 0.1 * sc, z);                                  // seated with its widest part at the sand, so its shadow starts right at its foot
       m4.compose(p, q, s); layer.add(m4);
       if (d < 0.5) {                                                              // contact shade on dry/wet sand (not out in the water)
@@ -1164,8 +1166,21 @@ let hiruLeafMat = null;  // glossy by day, matte at night (no moonlight sheen)
 (function placePlants() {
   const r = mulberry32(777);
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
+  // 浜昼顔 patches first: at the foot of the dunes where the green meets the sand, clear of rocks and the turtle's nesting run;
+  // shrubs keep a little distance so the flowers are not hidden
+  { const rf = mulberry32(4242);
+    for (let i = 0; i < 400 && flowerSpots.length < 32; i++) {
+      const z = -rf() * PERIOD, d = duneEdge(z) + 1.5 - rf() * 4, cx = shoreX(z) + d;
+      if (nearTower(cx, z)) continue;
+      if (Math.abs(wrapZ(z - (-605))) < 9) continue;                                        // the sea turtle's track and nest
+      if (rockSpots.some(c => Math.hypot(cx - c.x, wrapZ(z - c.z)) < c.r + 2.4)) continue;   // rocks
+      if (flowerSpots.some(f => Math.abs(wrapZ(z - f.z)) < 6)) continue;
+      flowerSpots.push({ x: cx, z });
+    } }
+  const nearFlower = (x, z, rad) => flowerSpots.some(f => Math.hypot(x - f.x, wrapZ(z - f.z)) < rad);
   const put = (layer, x, z, sc, sy, sink) => {
     if (nearTower(x, z)) return;
+    if (layer.clearOfFlowers && nearFlower(x, z, layer.clearOfFlowers + sc)) return;
     q.setFromAxisAngle(up, r() * TAU); s.set(sc, sc * sy, sc);
     p.set(x, heightAt(x, z) - sink, z); m4.compose(p, q, s); layer.add(m4);
   };
@@ -1207,7 +1222,7 @@ let hiruLeafMat = null;  // glossy by day, matte at night (no moonlight sheen)
     };
   }
   for (let t = 0; t < 3; t++) {
-    const im = new ChunkLayer(bushGeometry(50 + t), bushMat, 380, { cast: true });
+    const im = new ChunkLayer(bushGeometry(50 + t), bushMat, 380, { cast: true }); im.clearOfFlowers = 2.6;
     let tries = 0;
     while (im.count < 3800 && tries++ < 80000) {
       const z = -r() * PERIOD, d = duneEdge(z) - 1 - Math.pow(r(), 0.8) * 110, x = shoreX(z) + d;
@@ -1224,7 +1239,7 @@ let hiruLeafMat = null;  // glossy by day, matte at night (no moonlight sheen)
   }
   // spiky long-leaf plants and beach grass
   const tuftMat = swayMaterial({ vertexColors: true, roughness: 0.75, side: THREE.DoubleSide, envMapIntensity: 0.6 }, 0.08);
-  const spiky = new ChunkLayer(bladeTuft(9, 18, 0.7, 1.5, 0.05, 0.6, 0x2f5a1c, 0x86b54a), tuftMat, 280);
+  const spiky = new ChunkLayer(bladeTuft(9, 18, 0.7, 1.5, 0.05, 0.6, 0x2f5a1c, 0x86b54a), tuftMat, 280); spiky.clearOfFlowers = 1.8;
   const grass = new ChunkLayer(bladeTuft(42, 12, 0.3, 0.6, 0.014, 0.5, 0x3e6a22, 0xa7c46a), tuftMat, 160);
   let tries = 0;
   while ((spiky.count < 2400 || grass.count < 5400) && tries++ < 120000) {
@@ -1242,8 +1257,39 @@ let hiruLeafMat = null;  // glossy by day, matte at night (no moonlight sheen)
   leafShape.bezierCurveTo(0.0, 0.078, 0.0, 0.06, 0.0, 0.06);
   leafShape.bezierCurveTo(0.0, 0.06, 0.0, 0.078, 0.02, 0.075);
   leafShape.bezierCurveTo(0.06, 0.07, 0.05, 0.01, 0, 0);
-  const leafGeo = new THREE.ShapeGeometry(leafShape, 6).rotateX(-Math.PI / 2 + 0.25);
-  const leafMat = new THREE.MeshStandardMaterial({ color: 0x3f7a2a, roughness: 0.35, side: THREE.DoubleSide, envMapIntensity: 1 }); hiruLeafMat = leafMat;
+  const leafGeo = new THREE.ShapeGeometry(leafShape, 10);
+  { const P = leafGeo.attributes.position, uv = leafGeo.attributes.uv;          // map the leaf outline onto the vein texture
+    for (let i = 0; i < P.count; i++) uv.setXY(i, (P.getX(i) + 0.06) / 0.12, P.getY(i) / 0.08); }
+  leafGeo.rotateX(-Math.PI / 2 + 0.25);
+  // the glossy kidney-shaped leaf: palmate pale veins fanning out from where the stalk joins, a pale midrib, lighter rim
+  const leafCv = document.createElement('canvas'); leafCv.width = leafCv.height = 256;
+  { const g = leafCv.getContext('2d'), W = 256, H = 256, X = u => u * W, Y = v => (1 - v) * H;
+    const nx = X(0.5), ny = Y(0.06 / 0.08);                                   // the notch, where the stalk joins
+    const bg = g.createRadialGradient(nx, ny, 10, nx, ny, 230);
+    bg.addColorStop(0, '#3f7c30'); bg.addColorStop(0.6, '#4f8f3a'); bg.addColorStop(1, '#68a24c');
+    g.fillStyle = bg; g.fillRect(0, 0, W, H);
+    // a little mottling between the veins
+    for (let i = 0; i < 260; i++) { g.fillStyle = `rgba(${30 + Math.random() * 30},${70 + Math.random() * 40},${25 + Math.random() * 20},0.18)`;
+      g.beginPath(); g.arc(Math.random() * W, Math.random() * H, 3 + Math.random() * 9, 0, TAU); g.fill(); }
+    const vein = (a, len, w, alpha, branches) => {
+      const ex = nx + Math.sin(a) * len, ey = ny + Math.cos(a) * len, cx = nx + Math.sin(a) * len * 0.5 + Math.cos(a) * 8, cy = ny + Math.cos(a) * len * 0.5;
+      g.strokeStyle = `rgba(178,214,140,${alpha * 0.7})`; g.lineWidth = w; g.lineCap = 'round';
+      g.beginPath(); g.moveTo(nx, ny); g.quadraticCurveTo(cx, cy, ex, ey); g.stroke();
+      for (let k = 1; k <= branches; k++) {                                     // side veins, forking toward the rim
+        const t = k / (branches + 1), bx = nx + Math.sin(a) * len * t, by = ny + Math.cos(a) * len * t;
+        for (const sd of [-1, 1]) { const ba = a + sd * (0.55 + Math.random() * 0.25), bl = len * (0.35 - 0.12 * t);
+          g.lineWidth = w * 0.4; g.strokeStyle = `rgba(160,204,124,${alpha * 0.4})`;
+          g.beginPath(); g.moveTo(bx, by); g.lineTo(bx + Math.sin(ba) * bl, by + Math.cos(ba) * bl); g.stroke(); }
+      }
+    };
+    for (let k = -4; k <= 4; k++) { const a = k * 0.45; vein(a, k === 0 ? 180 : 165 - Math.abs(k) * 14, k === 0 ? 7 : 4.5, k === 0 ? 0.95 : 0.8, 3); }
+    // pale rim
+    g.globalCompositeOperation = 'source-atop';
+    const rim = g.createRadialGradient(nx, ny + 40, 100, nx, ny + 40, 200); rim.addColorStop(0, 'rgba(255,255,255,0)'); rim.addColorStop(1, 'rgba(190,220,150,0.35)');
+    g.fillStyle = rim; g.fillRect(0, 0, W, H); g.globalCompositeOperation = 'source-over';
+  }
+  const leafTex = new THREE.CanvasTexture(leafCv); leafTex.colorSpace = THREE.SRGBColorSpace; leafTex.anisotropy = 4;
+  const leafMat = new THREE.MeshStandardMaterial({ map: leafTex, roughness: 0.35, side: THREE.DoubleSide, envMapIntensity: 1 }); hiruLeafMat = leafMat;
   const flowerProfile = [];
   for (let i = 0; i <= 10; i++) { const t = i / 10; flowerProfile.push(new THREE.Vector2(0.004 + 0.048 * Math.pow(t, 2.2), 0.055 * Math.pow(t, 0.7))); }
   const flowerGeo = new THREE.LatheGeometry(flowerProfile, 30);
@@ -1264,10 +1310,8 @@ let hiruLeafMat = null;  // glossy by day, matte at night (no moonlight sheen)
   const leaves = new ChunkLayer(leafGeo, leafMat, 130);
   const flowers = new ChunkLayer(flowerGeo, flowerMat, 160);
   const e = new THREE.Euler();
-  for (let i = 0; i < 32; i++) {
-    const z = -r() * PERIOD, d = duneEdge(z) + 2 + r() * 10, cx = shoreX(z) + d;
-    if (nearTower(cx, z)) continue;
-    flowerSpots.push({ x: cx, z });
+  for (const fs of flowerSpots) {
+    const z = fs.z, cx = fs.x;
     for (let v = 0; v < 5; v++) {             // a few runners per patch
       let ang = r() * TAU, x = cx, zz = z;
       for (let k = 0; k < 16; k++) {
@@ -1682,8 +1726,14 @@ function spawnSchool() {
   Object.assign(school, {
     alive: true, t: 0, life: 9 + Math.random() * 8, cz: z, cx: shoreX(z) + 1.9 + Math.random() * 2.5,
     dir: Math.random() < .5 ? Math.PI / 2 : -Math.PI / 2, flee: 0, seen: false,
-    fish: Array.from({ length: n }, () => ({ ox: (Math.random() - .5) * 1.6, oz: (Math.random() - .5) * 1.2, ph: Math.random() * TAU, len: 0.15 + Math.random() * 0.08, sp: 0.8 + Math.random() * 0.4 }))
+    fish: Array.from({ length: n }, () => ({ ox: (Math.random() - .5) * 1.6, oz: (Math.random() - .5) * 1.2, ph: Math.random() * TAU, len: 0.15 + Math.random() * 0.08, sp: 0.8 + Math.random() * 0.4,
+      turn: 2.5 + Math.random() * 2.5, react: Math.random() * 0.25 }))
   });
+  // each fish has its own position and heading and swims after its place in the school, so a turn ripples through the group
+  for (const f of school.fish) {
+    const c = Math.cos(school.dir), sn = Math.sin(school.dir);
+    f.x = school.cx + f.ox * c - f.oz * sn; f.z = school.cz + f.ox * sn + f.oz * c; f.hdg = school.dir; f.v = 0.32; f.lag = 0;
+  }
 }
 const _fq = new THREE.Quaternion(), _fp = new THREE.Vector3(), _fs = new THREE.Vector3(), _fm = new THREE.Matrix4();
 function updateFish(dt) {
@@ -1708,12 +1758,26 @@ function updateFish(dt) {
   const fade = smooth(0, 1.2, s.t) * (1 - smooth(s.life - 1.5, s.life, s.t));
   fishMat.opacity = 0.8 * fade; fishShadowMat.opacity = 0.5 * fade;
   const shx = -sunDir.x / sunDir.y * 0.22, shz = -sunDir.z / sunDir.y * 0.22;   // shadow lands a little away from the fish
-  const c = Math.cos(s.dir), sn = Math.sin(s.dir);
+  // the school's formation turns gently; each fish steers toward its slot with its own reaction time and agility
+  s.fdir = s.fdir === undefined ? s.dir : s.fdir + Math.atan2(Math.sin(s.dir - s.fdir), Math.cos(s.dir - s.fdir)) * Math.min(1, dt * (s.flee > 0 ? 5 : 1.2));
+  const c = Math.cos(s.fdir), sn = Math.sin(s.fdir);
   s.fish.forEach((f, i) => {
-    f.ph += dt * (speed * 14 + 4) * f.sp;
-    const lx = f.ox + Math.sin(f.ph * 0.23) * 0.12, lz = f.oz + Math.cos(f.ph * 0.19) * 0.1;
-    const x = s.cx + lx * c - lz * sn, z = s.cz + lx * sn + lz * c;
-    const h = s.dir + Math.sin(f.ph) * 0.18;
+    f.ph += dt * (f.v * 14 + 4) * f.sp;
+    const lx = f.ox + Math.sin(f.ph * 0.023) * 0.12, lz = f.oz + Math.cos(f.ph * 0.019) * 0.1;
+    const tx = s.cx + lx * c - lz * sn, tz = s.cz + lx * sn + lz * c;
+    // wanted velocity: go with the school, plus close the gap to my slot
+    const vx = Math.cos(s.dir) * speed + (tx - f.x) * 1.6, vz = Math.sin(s.dir) * speed + (tz - f.z) * 1.6;
+    const want = Math.atan2(vz, vx), wantV = Math.min(s.flee > 0 ? 2.6 : 1.1, Math.hypot(vx, vz));
+    if (s.flee > 0 && f.lag <= 0 && f.v < 1) f.lag = f.react;                 // startled fish react one after another
+    f.lag -= dt;
+    const agility = (s.flee > 0 && f.lag <= 0 ? 2.5 : 1) * f.turn;
+    { const d = Math.atan2(Math.sin(want - f.hdg), Math.cos(want - f.hdg)), maxRate = s.flee > 0 ? 9 : 2.2;   // a fish bends its body round, it can't spin on the spot
+      f.hdg += Math.max(-maxRate * dt, Math.min(maxRate * dt, d * Math.min(1, dt * agility))); }
+    const align = Math.max(0, Math.cos(want - f.hdg));                        // swim forward only as far as you face the way you want to go
+    f.v += (wantV * (0.35 + 0.65 * align) - f.v) * Math.min(1, dt * (s.flee > 0 ? 6 : 2.5));
+    f.x += Math.cos(f.hdg) * f.v * dt; f.z += Math.sin(f.hdg) * f.v * dt;
+    const x = f.x, z = f.z;
+    const h = f.hdg + Math.sin(f.ph) * (0.1 + 0.12 * Math.min(1, f.v));
     const a = Math.atan2(Math.sin(h), -Math.cos(h));
     _fq.setFromAxisAngle(UP, a); _fs.set(f.len, 1, f.len);
     _fp.set(x, 0.02, z); _fm.compose(_fp, _fq, _fs); fishMesh.setMatrixAt(i, _fm);
@@ -2506,7 +2570,7 @@ function shiftCreatures(dz) {
   jet.group.position.z += dz;
   for (const c of crabs) c.z += dz;
   for (const h of hermits) h.z += dz;
-  if (school.alive) school.cz += dz;
+  if (school.alive) { school.cz += dz; for (const f of school.fish) f.z += dz; }
   for (const b of plovers) b.z += dz;
   for (const b of terns) b.cz += dz;
 }
