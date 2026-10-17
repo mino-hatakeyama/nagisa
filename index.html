@@ -383,7 +383,7 @@ const sunLight = new THREE.DirectionalLight(0xfff1dc, 4.0);
 sunLight.castShadow = true;
 sunLight.shadow.mapSize.set(2048, 2048);
 Object.assign(sunLight.shadow.camera, { left: -34, right: 34, top: 34, bottom: -34, near: 1, far: 320 });
-sunLight.shadow.bias = -0.0004; sunLight.shadow.radius = 2; sunLight.shadow.normalBias = 0.03;
+sunLight.shadow.bias = -0.0005; sunLight.shadow.radius = 2; sunLight.shadow.normalBias = 0.02;   // small biases so shadows reach right to the foot of things
 scene.add(sunLight, sunLight.target);
 const hemi = new THREE.HemisphereLight(0x8fbcf0, 0xd8c9ac, 0.2);
 scene.add(hemi);
@@ -944,7 +944,56 @@ function updateJet(dt) {
 }
 
 /* ================= coral limestone rocks + sea arch ================= */
-const rockMat = new THREE.MeshStandardMaterial({ roughness: 0.92, metalness: 0, vertexColors: true, envMapIntensity: 0.7 });
+const rockMat = new THREE.MeshStandardMaterial({ roughness: 0.92, metalness: 0, vertexColors: true, envMapIntensity: 0.4 });
+rockMat.shadowSide = THREE.FrontSide;   // rocks cast from their sunlit faces, so the shadow meets the rock with no bright seam at its foot
+// weathered coral limestone, as on Okinawan beaches: dark grey and porous, riddled with pits of every size,
+// with paler weathered patches. Worked out per pixel in 3D (so no texture seams) and fed into both colour and normal.
+rockMat.onBeforeCompile = sh => {
+  sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vRockP;')
+    .replace('#include <project_vertex>', `#include <project_vertex>
+      { vec4 rp = vec4(transformed, 1.0);
+        #ifdef USE_INSTANCING
+        rp = instanceMatrix * rp;
+        #endif
+        vRockP = (modelMatrix * rp).xyz; }`);
+  sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>
+    varying vec3 vRockP;
+    float rh(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7)))*43758.5453); }
+    vec3 rh3(vec3 p){ return fract(sin(vec3(dot(p, vec3(127.1, 311.7, 74.7)), dot(p, vec3(269.5, 183.3, 246.1)), dot(p, vec3(113.5, 271.9, 124.6))))*43758.5453); }
+    float rn(vec3 p){ vec3 i = floor(p), f = fract(p); f = f*f*(3.0 - 2.0*f);
+      return mix(mix(mix(rh(i), rh(i + vec3(1,0,0)), f.x), mix(rh(i + vec3(0,1,0)), rh(i + vec3(1,1,0)), f.x), f.y),
+                 mix(mix(rh(i + vec3(0,0,1)), rh(i + vec3(1,0,1)), f.x), mix(rh(i + vec3(0,1,1)), rh(i + vec3(1,1,1)), f.x), f.y), f.z); }
+    float rfbm(vec3 p){ float v = 0.0, a = 0.5; for (int i = 0; i < 4; i++){ v += a*rn(p); p = p*2.07 + 3.1; a *= 0.5; } return v; }
+    float worley(vec3 p){ vec3 i = floor(p), f = fract(p); float d = 9.0;
+      for (int z = -1; z <= 1; z++) for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+        vec3 n = vec3(float(x), float(y), float(z)); vec3 o = rh3(i + n); d = min(d, length(n + o - f)); }
+      return d; }
+    float rockH(vec3 p, out float pit, out float pale){
+      vec3 q = p + 0.35*vec3(rfbm(p*1.7), rfbm(p*1.7 + 5.0), rfbm(p*1.7 + 9.0));   // warp so the holes are ragged, not round
+      float big = smoothstep(0.36, 0.08, worley(q*2.2 + 1.3));                // fist-sized hollows
+      float mid = smoothstep(0.32, 0.06, worley(q*6.5 + 7.1));                // finger-sized pits
+      float fine = smoothstep(0.3, 0.04, worley(q*19.0 + 3.7));               // pinholes
+      float rough = rfbm(p*9.0);
+      pit = max(big, max(mid*0.85, fine*0.6));
+      pale = smoothstep(0.5, 0.72, rfbm(p*0.9 + 11.0)) * (1.0 - pit);          // sun-bleached, lichen-free patches
+      float crag = abs(rn(q*11.0) - 0.5)*2.0;                                  // sharp little ridges of the crust
+      return -0.9*big - 0.55*mid - 0.3*fine + 0.5*rough + 0.35*crag;
+    }`)
+    .replace('#include <color_fragment>', `#include <color_fragment>
+      float rPit, rPale; float rHt = rockH(vRockP, rPit, rPale);
+      vec3 rc = diffuseColor.rgb;
+      float lum = dot(rc, vec3(0.333));
+      rc = mix(vec3(lum)*vec3(1.2, 1.0, 0.78), rc, 0.25) * 0.6;               // darker, warm-grey stone (no green cap)
+      rc = mix(rc, vec3(0.52, 0.5, 0.46) * (0.8 + 0.4*lum), rPale*0.55);      // paler weathered patches
+      rc *= 1.0 - 0.6*rPit;                                                    // shadowy pits
+      rc *= 0.85 + 0.3*rfbm(vRockP*4.0 + 2.0);
+      diffuseColor.rgb = rc;`)
+    .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+      { vec3 pos = -vViewPosition; vec3 dpx = dFdx(pos), dpy = dFdy(pos);
+        float hh = rHt*0.05, dhx = dFdx(hh), dhy = dFdy(hh);
+        vec3 r1 = cross(dpy, normal), r2 = cross(normal, dpx); float det = dot(dpx, r1);
+        vec3 grad = sign(det)*(dhx*r1 + dhy*r2); normal = normalize(abs(det)*normal - grad); }`);
+};
 function limestone(g, seed, greenTop) {
   const r = mulberry32(seed), a = Array.from({ length: 10 }, () => r() * TAU);
   const P = g.attributes.position, v = new THREE.Vector3();
@@ -993,7 +1042,7 @@ function rockGeometry(seed, green) {
     let y = v.y * k * sy;
     if (y < -0.1) y = -0.1 + (y + 0.1) * 0.3;
     // undercut: coral rock is eroded at the base
-    const under = 1 - 0.25 * smooth(0.2, -0.1, y);
+    const under = 1;
     P.setXYZ(i, v.x * k * sx * under, y, v.z * k * sz * under);
   }
   return limestone(g, seed + 7, green ? sy * 0.9 : 0);
@@ -1004,6 +1053,15 @@ const archSpots = [];
 (function placeRocks() {
   const r = mulberry32(1234), types = 5, per = 32;
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), e = new THREE.Euler();
+  // a soft dark patch on the sand right round each rock's foot (contact shadow / ambient occlusion)
+  const aoCv = document.createElement('canvas'); aoCv.width = aoCv.height = 128;
+  { const c = aoCv.getContext('2d'), gr = c.createRadialGradient(64, 64, 0, 64, 64, 64);
+    gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.55, 'rgba(255,255,255,0.85)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    c.fillStyle = gr; c.fillRect(0, 0, 128, 128); }
+  const aoTex = new THREE.CanvasTexture(aoCv);
+  const aoMat = new THREE.MeshBasicMaterial({ color: 0x1a1612, alphaMap: aoTex, transparent: true, opacity: 0.28, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 });
+  const aoLayer = new ChunkLayer(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), aoMat, 300, { receive: false, order: 1 });
+  const qa = new THREE.Quaternion(), sa = new THREE.Vector3();
   for (let t = 0; t < types; t++) {
     const big = t >= 3;
     const layer = new ChunkLayer(rockGeometry(100 + t, big), rockMat, 550, { cast: true });
@@ -1017,11 +1075,16 @@ const archSpots = [];
       if (nearTower(x, z)) continue;
       e.set((r() - .5) * 0.25, r() * TAU, (r() - .5) * 0.25); q.setFromEuler(e); s.set(sc, sc, sc);
       if (sc > 0.8) addCollider(x, z, sc * 1.05);
-      p.set(x, heightAt(x, z) - 0.15 * sc, z);
+      p.set(x, heightAt(x, z) - 0.1 * sc, z);                                  // seated with its widest part at the sand, so its shadow starts right at its foot
       m4.compose(p, q, s); layer.add(m4);
+      if (d < 0.5) {                                                              // contact shade on dry/wet sand (not out in the water)
+        qa.setFromEuler(new THREE.Euler(0, e.y, 0)); sa.set(sc * 2.2, 1, sc * 1.8);
+        p.set(x, heightAt(x, z) + 0.015, z); m4.compose(p, qa, sa); aoLayer.add(m4);
+      }
     }
     layer.build();
   }
+  aoLayer.build();
   // sea arch, one per stretch of beach, standing at the water's edge so you can walk through it
   const R = 5.2, TUBE = 2.3;
   let ag = new THREE.TorusGeometry(R, TUBE, 28, 72, Math.PI);
@@ -1127,6 +1190,41 @@ let hiruLeafMat = null;  // glossy by day, matte at night (no moonlight sheen)
   };
   // shrubs (クサトベラ / アダンの茂み風)
   const bushMat = swayMaterial({ vertexColors: true, roughness: 0.8, envMapIntensity: 0.7 }, 0.015);
+  { // dense salt-tolerant scrub: a mass of small leaf clusters in deep olive to fresh green, dark gaps between them
+    const prev = bushMat.onBeforeCompile;
+    bushMat.onBeforeCompile = sh => {
+      prev(sh);
+      sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vLeafP; varying float vLeafI;')
+        .replace('#include <project_vertex>', `#include <project_vertex>
+          vLeafP = position; vLeafI = 0.0;
+          #ifdef USE_INSTANCING
+          vLeafI = fract(sin(dot(instanceMatrix[3].xz, vec2(12.9898, 78.233)))*43758.5453);
+          #endif`);
+      sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>
+        varying vec3 vLeafP; varying float vLeafI;
+        vec3 lh3(vec3 p){ return fract(sin(vec3(dot(p, vec3(127.1, 311.7, 74.7)), dot(p, vec3(269.5, 183.3, 246.1)), dot(p, vec3(113.5, 271.9, 124.6))))*43758.5453); }
+        vec3 leafCell(vec3 p){ vec3 i = floor(p), f = fract(p); float d1 = 9.0, d2 = 9.0; vec3 id = vec3(0.0);
+          for (int z = -1; z <= 1; z++) for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+            vec3 n = vec3(float(x), float(y), float(z)), o = lh3(i + n); float d = length(n + o - f);
+            if (d < d1) { d2 = d1; d1 = d; id = i + n; } else if (d < d2) d2 = d; }
+          return vec3(d1, d2 - d1, lh3(id).x); }`)
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          vec3 lc = leafCell(vLeafP*11.0 + vLeafI*13.0);
+          vec3 lc2 = leafCell(vLeafP*27.0 + 3.0);
+          float gap = smoothstep(0.0, 0.25, lc.y) * smoothstep(1.0, 0.35, lc.x);     // dark hollows between rounded leaf clusters
+          vec3 deep = vec3(0.07, 0.16, 0.05), mid = vec3(0.15, 0.3, 0.08), fresh = vec3(0.27, 0.42, 0.11);
+          vec3 leaf = mix(deep, mid, smoothstep(0.1, 0.6, lc.z));
+          leaf = mix(leaf, fresh, smoothstep(0.75, 0.95, lc.z) * 0.8);
+          leaf = mix(leaf, leaf*vec3(1.15, 1.05, 0.7), vLeafI*0.6);                  // each bush a slightly different green
+          float lum = dot(diffuseColor.rgb, vec3(0.3, 0.6, 0.1)) / 0.3;               // keep the old top-lit / underside shading
+          diffuseColor.rgb = leaf * clamp(lum, 0.45, 1.25) * (0.5 + 0.55*gap) * (0.8 + 0.35*smoothstep(0.7, 0.1, lc2.x));`)
+        .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+          { float hh = sqrt(max(0.0, 1.0 - lc.x*lc.x))*0.035 + sqrt(max(0.0, 1.0 - lc2.x*lc2.x))*0.01;   // little domes
+            vec3 pos = -vViewPosition; vec3 dpx = dFdx(pos), dpy = dFdy(pos); float dhx = dFdx(hh), dhy = dFdy(hh);
+            vec3 r1 = cross(dpy, normal), r2 = cross(normal, dpx); float det = dot(dpx, r1);
+            normal = normalize(abs(det)*normal - sign(det)*(dhx*r1 + dhy*r2)); }`);
+    };
+  }
   for (let t = 0; t < 3; t++) {
     const im = new ChunkLayer(bushGeometry(50 + t), bushMat, 380, { cast: true });
     let tries = 0;
