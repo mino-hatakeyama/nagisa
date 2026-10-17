@@ -1755,6 +1755,7 @@ function spawnTern(b) {
 /* ================= audio ================= */
 let jetGain = null;
 let jetPan, jetLP, jetBP, jetGain2;
+let surf1, surf1LP, surf3, surf3HP;
 let actx = null, master = null, surfGain, surfFilter, surfPan, surfFar, surfFarLP, windGain, stepBufs = [], splashBufs = [], muted = false;
 let nextCrash = 0, nextHiss = 0;
 function makeCrunch(wet) {
@@ -1795,14 +1796,34 @@ function initAudio() {
   surfFarLP = actx.createBiquadFilter(); surfFarLP.type = 'lowpass'; surfFarLP.frequency.value = 18000; surfFarLP.Q.value = 0.5;
   surfFar = actx.createGain(); surfFar.gain.value = 1;
   surfPan.connect(surfFarLP).connect(surfFar).connect(master);
-  const s1 = actx.createBufferSource(); s1.buffer = nb; s1.loop = true;
-  surfFilter = actx.createBiquadFilter(); surfFilter.type = 'lowpass'; surfFilter.frequency.value = 500; surfFilter.Q.value = 0.4;
-  surfGain = actx.createGain(); surfGain.gain.value = 0.05;
-  s1.connect(surfFilter).connect(surfGain).connect(surfPan); s1.start();
-  const s2 = actx.createBufferSource(); s2.buffer = nb; s2.loop = true; s2.playbackRate.value = 0.37;
-  const f2 = actx.createBiquadFilter(); f2.type = 'lowpass'; f2.frequency.value = 260;
-  const g2 = actx.createGain(); g2.gain.value = 0.16;
-  s2.connect(f2).connect(g2).connect(surfPan); s2.start(0, 2.3);
+  // ---- the surf in three layers, driven every frame by the same wave cycle that moves the water on screen ----
+  // layer 1: the open sea's low swell — brown noise, deep and slow
+  const sr = actx.sampleRate, bn = actx.createBuffer(2, Math.floor(sr * 8), sr);
+  for (let c = 0; c < 2; c++) { const d = bn.getChannelData(c); let v = 0; for (let i = 0; i < d.length; i++) { v = (v + 0.02 * (Math.random() * 2 - 1)) / 1.02; d[i] = v * 3.5; } }
+  const b1 = actx.createBufferSource(); b1.buffer = bn; b1.loop = true;
+  surf1LP = actx.createBiquadFilter(); surf1LP.type = 'lowpass'; surf1LP.frequency.value = 160; surf1LP.Q.value = 0.5;
+  surf1 = actx.createGain(); surf1.gain.value = 0.25;
+  b1.connect(surf1LP).connect(surf1).connect(surfPan); b1.start();
+  // layer 2: the wave breaking and rushing up the sand — "ザザァーッ"
+  const b2 = actx.createBufferSource(); b2.buffer = nb; b2.loop = true;
+  surfFilter = actx.createBiquadFilter(); surfFilter.type = 'lowpass'; surfFilter.frequency.value = 500; surfFilter.Q.value = 0.5;
+  const surf2Body = actx.createBiquadFilter(); surf2Body.type = 'peaking'; surf2Body.frequency.value = 450; surf2Body.gain.value = 5; surf2Body.Q.value = 0.7;
+  surfGain = actx.createGain(); surfGain.gain.value = 0;
+  b2.connect(surf2Body).connect(surfFilter).connect(surfGain).connect(surfPan); b2.start(0, 1.7);
+  // layer 3: foam fizzing on the wet sand as the water drains back — "シュワァ…": a crackle of tiny bursting bubbles
+  const fz = actx.createBuffer(2, Math.floor(sr * 4), sr);
+  for (let c = 0; c < 2; c++) {
+    const d = fz.getChannelData(c);
+    for (let k = 0; k < 9000; k++) {                       // thousands of little pops of different sizes
+      const at = Math.floor(Math.random() * d.length), len = Math.floor(sr * (0.002 + Math.random() * Math.random() * 0.02)), a = 0.15 + Math.random() * 0.85;
+      for (let i = 0; i < len && at + i < d.length; i++) d[at + i] += (Math.random() * 2 - 1) * a * Math.exp(-i / (len * 0.3));
+    }
+    for (let i = 0; i < d.length; i++) d[i] += (Math.random() * 2 - 1) * 0.12;   // and a fine hiss under them
+  }
+  const b3 = actx.createBufferSource(); b3.buffer = fz; b3.loop = true;
+  surf3HP = actx.createBiquadFilter(); surf3HP.type = 'highpass'; surf3HP.frequency.value = 3200; surf3HP.Q.value = 0.6;
+  surf3 = actx.createGain(); surf3.gain.value = 0;
+  b3.connect(surf3HP).connect(surf3).connect(surfPan); b3.start();
   const s3 = actx.createBufferSource(); s3.buffer = nb; s3.loop = true; s3.playbackRate.value = 0.8;
   const f3 = actx.createBiquadFilter(); f3.type = 'bandpass'; f3.frequency.value = 700; f3.Q.value = 0.5;
   windGain = actx.createGain(); windGain.gain.value = 0.02;
@@ -1820,7 +1841,29 @@ function initAudio() {
   nextCrash = Math.floor(worldTime / WAVE_T) + (worldTime / WAVE_T % 1 > 0.72 ? 1 : 0);
   nextHiss = Math.floor(worldTime / WAVE_T) + 1;
 }
+function updateSurf() {
+  // exactly the cycle the swash on screen follows: the band of foam rolls in (p 0.55–1), breaks and runs up the beach (0–0.3),
+  // then drains back over the wet sand (0.3–1)
+  const ws = waveState(worldTime), p = ws.p, A = waveAmp(ws.n), An = waveAmp(ws.n + 1), now = actx.currentTime;
+  const near = 1 / (1 + Math.pow(Math.max(0, Math.abs(player.x - shoreX(player.z)) - 2) / 14, 2));   // how close to the water's edge
+  // 1: open-sea swell — always there, breathing slowly with each set
+  const swell = 0.75 + 0.25 * Math.sin((worldTime / WAVE_T) * TAU - 1.2);
+  surf1.gain.setTargetAtTime(0.32 * swell * (0.55 + 0.45 * near), now, 0.4);
+  // 2: the break and run-up
+  let g2, f2;
+  if (p >= 0.55) { const u = smooth(0.55, 1, p); g2 = 0.05 + 0.3 * An * u * u; f2 = 600 + 1500 * u; }        // the incoming wave builds, rumbling louder
+  else if (p < 0.3) { const u = p / 0.3; g2 = A * (0.42 * (1 - u) + 0.12) * (u < 0.08 ? 0.75 + 3 * u : 1); f2 = 3600 - 2400 * u; }   // the crash and rush up the sand
+  else { const u = (p - 0.3) / 0.25; g2 = 0.05 + 0.07 * A * Math.max(0, 1 - u); f2 = 1200 - 600 * Math.min(1, u); }
+  surfGain.gain.setTargetAtTime(g2 * (0.35 + 0.65 * near), now, 0.06);
+  surfFilter.frequency.setTargetAtTime(f2, now, 0.08);
+  // 3: fizzing foam as the water drains away, strongest right after the turn, fading as the sand soaks it up
+  let g3 = 0;
+  if (p >= 0.25 && p < 0.9) { const u = (p - 0.25) / 0.65; g3 = A * smooth(0, 0.08, u) * Math.pow(1 - u, 1.6); }
+  surf3.gain.setTargetAtTime(0.25 * g3 * near * near, now, 0.08);
+  surf3HP.frequency.setTargetAtTime(3200 + 1800 * Math.max(0, (p - 0.3) / 0.6), now, 0.2);   // the fizz gets finer as the bubbles get smaller
+}
 function scheduleWaves() {
+  if (surf1) return;                                     // the layered surf above has taken over
   const lead = 0.25;
   const tc = nextCrash * WAVE_T + 0.78 * WAVE_T;
   if (tc - worldTime < lead) {
@@ -2763,7 +2806,7 @@ function frame() {
   windUniform.value = worldTime;
 
   if (actx) {
-    scheduleWaves(); ambientBirds(dt);
+    updateSurf(); ambientBirds(dt);
     if (surfPan.pan) surfPan.pan.value = Math.cos(player.yaw) * 0.65;
     const base = heightAt(TOWER_E.x, TOWER_E.z), topY = pathAt(towerPath.total).y;
     const up = tower.mode !== 'free' ? Math.max(0, Math.min(1, (tower.y - base) / Math.max(1, topY - base))) : 0;
