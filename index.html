@@ -627,7 +627,7 @@ const swashMat = new THREE.ShaderMaterial({
     #include <fog_pars_vertex>
     void main(){
       vec3 p = position;
-      float wob = 0.035*sin(p.z*0.105+uCycle*2.1) + 0.022*sin(p.z*0.285+uCycle*5.3) + 0.012*sin(p.z*0.85+uCycle);
+      float wob = 0.035*sin(p.z*0.10210+uCycle*2.1) + 0.022*sin(p.z*0.28274+uCycle*5.3) + 0.012*sin(p.z*0.84823+uCycle);
       p.y = max(mix(uLevel + wob, 0.012, smoothstep(0.0, 6.0, off)), ground + 0.04);   // never below the sand, so the wet marks above the water are not hidden
       vec4 wp = modelMatrix * vec4(p,1.0);
       vWorld = wp.xyz; vDepth = p.y - ground; vOff = off; vLz = position.z;
@@ -649,7 +649,7 @@ const swashMat = new THREE.ShaderMaterial({
       h += 0.06*sin(z*k*120.0)*exp(-(d + 3.0)*(d + 3.0)/8.0);
       return h;
     }
-    float wobAt(float c){ return 0.035*sin(vLz*0.105+c*2.1) + 0.022*sin(vLz*0.285+c*5.3) + 0.012*sin(vLz*0.85+c); }   // undulations of the waterline: twice the old wavelength
+    float wobAt(float c){ return 0.035*sin(vLz*0.10210+c*2.1) + 0.022*sin(vLz*0.28274+c*5.3) + 0.012*sin(vLz*0.84823+c); }   // undulations of the waterline: whole numbers of waves per 800 m period (13, 36, 108), so the loop has no seam
     void main(){
       float toSea = smoothstep(0.0, 6.0, vOff);
       float level = mix(uLevel + wobAt(uCycle), 0.012, toSea);
@@ -2519,7 +2519,7 @@ function updateCreatures(dt) {
     b.t += dt;
     let run = 0;
     // where the swash reaches at this spot right now (same shape as the drawn water)
-    const lz = baseZ(b.z), lev = wsP.level + 0.035 * Math.sin(lz * 0.105 + wsP.n * 2.1) + 0.022 * Math.sin(lz * 0.285 + wsP.n * 5.3) + 0.012 * Math.sin(lz * 0.85 + wsP.n);
+    const lz = baseZ(b.z), lev = wsP.level + 0.035 * Math.sin(lz * 0.10210 + wsP.n * 2.1) + 0.022 * Math.sin(lz * 0.28274 + wsP.n * 5.3) + 0.012 * Math.sin(lz * 0.84823 + wsP.n);
     let lo = -9, hi = 3;                                   // d (from the shoreline) where the sand rises out of the water
     for (let i = 0; i < 12; i++) { const mid = (lo + hi) / 2; if (heightAt(shoreX(b.z) + mid, b.z) > lev) lo = mid; else hi = mid; }
     const edgeX = shoreX(b.z) + lo;
