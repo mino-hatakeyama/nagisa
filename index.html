@@ -812,7 +812,9 @@ scene.add(jet.group);
   jet.strobe = lamp(8, 8, 8, 0, 1.0, 29.5, 1.5); jet.beacon = lamp(7, 0.6, 0.4, 0, 2.4, 0, 1.3);
   body.scale.setScalar(1.6);          // a little larger than life so it reads from the ground
   jet.body = body; jet.group.add(body); body.visible = false;
+  jet.mats = []; body.traverse(o => { if (o.material && !jet.mats.includes(o.material)) { o.material.transparent = true; jet.mats.push(o.material); } });   // so it can fade into the haze
 })();
+const JET_END = 9400, JET_FADE0 = 7400;   // flight distance (overhead at 4200); it fades out over the last stretch instead of vanishing
 const TRAIL_MAX = 240, TRAIL_DT = 0.25, TRAIL_LIFE = 55;
 const trailMat = new THREE.ShaderMaterial({
   transparent: true, depthWrite: false, side: THREE.DoubleSide, fog: false,
@@ -879,12 +881,12 @@ function updateJet(dt) {
   const sideX = jet.dz, sideZ = -jet.dx;                     // horizontal, perpendicular to the flight path
   for (const tr of trails) {
     const ex = px + sideX * tr.side * 12, ez = z + sideZ * tr.side * 12, ey = jet.alt - 3;
-    if (d < 8400 && (tr.pts.length === 0 || jet.t - tr.pts[tr.pts.length - 1].born >= TRAIL_DT)) {
+    if (d < JET_END && (tr.pts.length === 0 || jet.t - tr.pts[tr.pts.length - 1].born >= TRAIL_DT)) {
       tr.pts.push({ x: ex, y: ey, z: ez, born: jet.t });
       if (tr.pts.length > TRAIL_MAX - 1) tr.pts.shift();
     }
     while (tr.pts.length && jet.t - tr.pts[0].born > TRAIL_LIFE) tr.pts.shift();
-    const list = d < 8400 ? tr.pts.concat([{ x: ex, y: ey, z: ez, born: jet.t }]) : tr.pts;
+    const list = d < JET_END ? tr.pts.concat([{ x: ex, y: ey, z: ez, born: jet.t }]) : tr.pts;
     const P = tr.mesh.geometry.attributes.position, A = tr.mesh.geometry.attributes.aAlpha;
     for (let i = 0; i < list.length; i++) {
       const q = list[i], age = jet.t - q.born;
@@ -898,12 +900,13 @@ function updateJet(dt) {
     P.needsUpdate = A.needsUpdate = true;
     tr.mesh.geometry.setDrawRange(0, Math.max(0, list.length - 1) * 6);
   }
-  if (d > 8400) {
+  { const fade = 1 - smooth(JET_FADE0, JET_END, d); for (const m of jet.mats) m.opacity = fade; }   // smaller and fainter as it goes
+  if (d > JET_END) {
     jet.body.visible = false;
     if (jet.queued === undefined) { jet.queued = 240 + Math.random() * 120; jet.goneT = 0; }   // gone from view: the next one is scheduled now (roughly every five minutes)
     else { jet.queued -= dt; jet.goneT += dt; }
   }
-  if (jet.t > 8400 / jet.speed + TRAIL_LIFE) {
+  if (jet.t > JET_END / jet.speed + TRAIL_LIFE) {
     jet.active = false; jet.next = jet.queued ?? 240 + Math.random() * 120; jet.queued = undefined;   // the contrail has faded; keep the same countdown
     for (const tr of trails) { tr.pts.length = 0; tr.mesh.geometry.setDrawRange(0, 0); }
   }
@@ -1632,24 +1635,68 @@ function makeBird(kind) {
   const white = new THREE.MeshStandardMaterial({ color: 0xf6f4ef, roughness: 0.7 });
   const dark = new THREE.MeshStandardMaterial({ color: 0x1b1b1d, roughness: 0.5 });
   const wingMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, side: THREE.DoubleSide, color: tern ? 0xffffff : 0xc9b08c });
-  const body = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), bodyMat); body.scale.set(0.14, 0.13, 0.38); body.castShadow = true; g.add(body);
-  const belly = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 8), white); belly.scale.set(0.125, 0.1, 0.3); belly.position.set(0, -0.045, -0.02); g.add(belly);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 10), tern ? white : bodyMat); head.position.set(0, 0.1, -0.36); g.add(head);
+  let body, head;
+  if (tern) {
+    body = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), bodyMat); body.scale.set(0.14, 0.13, 0.38); body.castShadow = true; g.add(body);
+    const belly = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 8), white); belly.scale.set(0.125, 0.1, 0.3); belly.position.set(0, -0.045, -0.02); g.add(belly);
+    head = new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 10), white); head.position.set(0, 0.1, -0.36); g.add(head);
+  } else {
+    // シロチドリ: sandy grey-brown back, white underparts, white forehead and collar, a rufous cap,
+    // a black stripe through the eye and a black patch on each side of the breast
+    const paint = (geo, fn) => {
+      const P = geo.attributes.position, c = new Float32Array(P.count * 3), v = new THREE.Vector3();
+      for (let i = 0; i < P.count; i++) { v.fromBufferAttribute(P, i).normalize(); const k = fn(v.x, v.y, v.z); c[i * 3] = k[0]; c[i * 3 + 1] = k[1]; c[i * 3 + 2] = k[2]; }
+      geo.setAttribute('color', new THREE.BufferAttribute(c, 3)); return geo;
+    };
+    const mix = (p, q, t) => [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, p[2] + (q[2] - p[2]) * t];
+    const WH = [0.96, 0.94, 0.9], BR = [0.5, 0.39, 0.27], RU = [0.72, 0.42, 0.2], BK = [0.07, 0.065, 0.06];
+    const pv = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, envMapIntensity: 0.25 });
+    // body: brown above, white below; the white wraps up a little at the front (the breast)
+    body = new THREE.Mesh(paint(new THREE.SphereGeometry(1, 24, 16), (x, y, z) => mix(WH, BR, smooth(-0.3 + Math.max(0, -z - 0.3) * 0.9, 0.0 + Math.max(0, -z - 0.3) * 0.9, y))), pv);
+    body.scale.set(0.14, 0.13, 0.34); body.rotation.x = 0.08; body.castShadow = true; g.add(body);
+    head = new THREE.Mesh(paint(new THREE.SphereGeometry(0.11, 44, 32), (x, y, z) => {
+      let k = WH;
+      k = mix(k, RU, smooth(0.42, 0.55, y) * smooth(-0.75, -0.5, z));            // rufous cap, from the crown back to the nape
+      k = mix(k, BR, smooth(0.25, 0.7, z) * smooth(0.1, 0.4, y));                 // nape fades into the brown back
+      k = mix(k, BK, smooth(0.42, 0.5, y) * (1 - smooth(-0.62, -0.52, z)) * smooth(-0.88, -0.78, z));   // black bar above the white forehead
+      const eye = (1 - smooth(0.09, 0.12, Math.abs(y - 0.12 + z * 0.12))) * smooth(0.25, 0.45, Math.abs(x)) * (1 - smooth(0.15, 0.4, z));
+      k = mix(k, BK, eye);                                                         // black stripe from the bill through the eye
+      return k;
+    }), pv);
+    head.position.set(0, 0.1, -0.33); g.add(head);
+    for (const sx of [-1, 1]) {
+      const patch = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 8), dark); patch.scale.set(0.016, 0.04, 0.026);
+      patch.position.set(sx * 0.086, 0.03, -0.28); patch.rotation.y = sx * 0.5; g.add(patch);   // the black breast patches
+      const eyeBall = new THREE.Mesh(new THREE.SphereGeometry(0.016, 8, 6), dark); eyeBall.position.set(sx * 0.085, 0.125, -0.39); g.add(eyeBall);
+    }
+    // tail: a short flat fan behind the body, brown with a dark tip, held a little up
+    const tg = new THREE.BoxGeometry(0.11, 0.07, 0.24, 2, 2, 6), TP = tg.attributes.position, tc = new Float32Array(TP.count * 3);
+    for (let i = 0; i < TP.count; i++) {
+      const u = (TP.getZ(i) + 0.12) / 0.24;                                     // 0 at the root, 1 at the tip
+      TP.setX(i, TP.getX(i) * (0.85 - 0.25 * u)); TP.setY(i, TP.getY(i) * (1 - 0.72 * u) + 0.012 * u);
+      const k = mix(BR, [0.2, 0.16, 0.12], smooth(0.72, 0.92, u));
+      const edge = smooth(0.035, 0.05, Math.abs(TP.getX(i))) * smooth(0.3, 0.6, u) * (1 - smooth(0.8, 0.95, u));
+      const kk = mix(k, WH, edge * 0.8);                                         // pale outer feathers
+      tc[i * 3] = kk[0]; tc[i * 3 + 1] = kk[1]; tc[i * 3 + 2] = kk[2];
+    }
+    tg.setAttribute('color', new THREE.BufferAttribute(tc, 3)); tg.computeVertexNormals();
+    const ptail = new THREE.Mesh(tg, pv); ptail.position.set(0, 0.04, 0.36); ptail.rotation.x = -0.1; ptail.castShadow = true; g.add(ptail);
+  }
   const cap = new THREE.Mesh(new THREE.SphereGeometry(0.105, 12, 8, 0, TAU, 0, 1.3), dark); cap.position.set(0, 0.12, -0.37); cap.rotation.x = -0.4;
   if (tern) g.add(cap);
-  else { const band = new THREE.Mesh(new THREE.TorusGeometry(0.1, 0.018, 6, 16), dark); band.position.set(0, 0.03, -0.3); band.rotation.x = 1.2; g.add(band); }
+
   const beak = new THREE.Mesh(new THREE.ConeGeometry(0.025, tern ? 0.2 : 0.09, 8), tern ? new THREE.MeshStandardMaterial({ color: 0xd8442a, roughness: 0.5 }) : dark);
   beak.rotation.x = -Math.PI / 2; beak.position.set(0, 0.09, tern ? -0.55 : -0.5); g.add(beak);
-  const tail = new THREE.Mesh(new THREE.ConeGeometry(0.09, tern ? 0.45 : 0.2, 3), tern ? white : bodyMat); tail.rotation.x = Math.PI / 2; tail.scale.set(1, 1, 0.25); tail.position.set(0, 0.02, tern ? 0.52 : 0.4); g.add(tail);
+  if (tern) { const tail = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.45, 3), white); tail.rotation.x = Math.PI / 2; tail.scale.set(1, 1, 0.25); tail.position.set(0, 0.02, 0.52); g.add(tail); }
   const wings = [];
   for (const sx of [-1, 1]) {
     const pivot = new THREE.Group(); pivot.position.set(sx * 0.1, 0.06, -0.04);
     const w = new THREE.Mesh(wingGeometry(tern), wingMat); w.scale.set(sx * (tern ? 1.05 : 0.7), 1, tern ? 1 : 0.8); w.castShadow = true;
     pivot.add(w); g.add(pivot); wings.push({ pivot, sx });
   }
-  const legs = [];
+  const legs = [], legMat = new THREE.MeshStandardMaterial({ color: 0x3e3d3b, roughness: 0.6 });
   if (!tern) for (const sx of [-1, 1]) {
-    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.012, 0.3, 5), dark); leg.position.set(sx * 0.05, -0.24, 0.02); g.add(leg); legs.push(leg);
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.011, 0.3, 6), legMat); leg.position.set(sx * 0.05, -0.24, 0.02); g.add(leg); legs.push(leg);
   }
   return { g, wings, legs, body };
 }
@@ -1824,7 +1871,7 @@ function spawnPlover(b, near) {
     react: 0.75 + R() * 0.6, fleeSp: 2.6 + R() * 0.9, folSp: 0.6 + R() * 0.6, gap: 0.25 + R() * 0.7, peckRate: 0.9 + R() * 0.9,
     wait: R() * 2, burst: 0, moving: true, ang: b.face ?? 0, look: 0 });
   b.ang = b.face;
-  b.g.visible = true; b.m.wings.forEach(w => w.pivot.visible = false);
+  b.g.visible = true; b.m.wings.forEach(w => w.pivot.visible = false); b.m.legs.forEach(l => l.visible = true);   // legs back on after a flight
 }
 function spawnTern(b) {
   const p = aheadPoint(40, 120, 5, 60);
