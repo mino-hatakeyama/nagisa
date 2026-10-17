@@ -816,10 +816,11 @@ scene.add(jet.group);
 const TRAIL_MAX = 240, TRAIL_DT = 0.25, TRAIL_LIFE = 55;
 const trailMat = new THREE.ShaderMaterial({
   transparent: true, depthWrite: false, side: THREE.DoubleSide, fog: false,
+  uniforms: { uCol: { value: new THREE.Color(1.6, 1.62, 1.66) } },
   vertexShader: `attribute float aAlpha; attribute float aV; varying float vA; varying float vV;
     void main(){ vA = aAlpha; vV = aV; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
-  fragmentShader: `varying float vA; varying float vV;
-    void main(){ float edge = sin(3.14159*vV); gl_FragColor = vec4(vec3(1.6, 1.62, 1.66), vA*edge*edge);
+  fragmentShader: `uniform vec3 uCol; varying float vA; varying float vV;
+    void main(){ float edge = sin(3.14159*vV); gl_FragColor = vec4(uCol, vA*edge*edge);
       #include <tonemapping_fragment>
       #include <colorspace_fragment>
     }`
@@ -1370,7 +1371,8 @@ function pathAt(sv) {
   // shaft rises straight out of the knoll, with a low footing ring
   const base = heightAt(TX, TZ) - 1.5;
   add(new THREE.CylinderGeometry(SHAFT_R, SHAFT_R, RT - base, 40), conc, 0, (RT + base) / 2, 0);
-  add(new THREE.CylinderGeometry(SHAFT_R + 0.25, SHAFT_R + 0.35, 1.9, 40, 1, true), concDark, 0, heightAt(TX, TZ) - 0.75, 0);
+  add(new THREE.CylinderGeometry(SHAFT_R + 0.25, SHAFT_R + 0.35, 1.9, 40, 1, true), concDark.clone(), 0, heightAt(TX, TZ) - 0.75, 0).material.side = THREE.DoubleSide;
+  { const cap = add(new THREE.RingGeometry(SHAFT_R - 0.02, SHAFT_R + 0.25, 40), concDark, 0, heightAt(TX, TZ) + 0.2, 0); cap.rotation.x = -Math.PI / 2; }   // lid on the footing ring: no gap to see the grass through
   add(new THREE.CylinderGeometry(SHAFT_R + 0.03, SHAFT_R + 0.03, 0.3, 40, 1, true), concDark, 0, RT - 0.15, 0);   // open-ended band: no lid fighting the roof
   // spiral stair from the ground to the top: cantilevered treads, stringer, handrail
   const NT = Math.round((RT - SP_Y0) / 0.2), treadGeo = new THREE.BoxGeometry(1.05, 0.12, 0.36);
@@ -1669,8 +1671,21 @@ function makeHermit() {
   }
   shellGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
   shellGeo.computeVertexNormals();
-  const shell = new THREE.Mesh(shellGeo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.45, envMapIntensity: 0.9 }));
+  const shell = new THREE.Mesh(shellGeo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.45, envMapIntensity: 0.9, side: THREE.DoubleSide }));
   shell.rotation.x = 1.2; shell.position.set(0, 0.035, 0.01); shell.castShadow = true;
+  // the dark hollow of the shell's mouth, set just inside the opening so the shell never looks cut away
+  // looking into the mouth: pale at the rim, the shell's brown in the middle
+  const mouthGeo = new THREE.RingGeometry(0.0004, 0.042, 72, 18), MP = mouthGeo.attributes.position, mc = new Float32Array(MP.count * 3);
+  for (let i = 0; i < MP.count; i++) {
+    const x = MP.getX(i), y = MP.getY(i), r = Math.hypot(x, y) / 0.042, a = Math.atan2(y, x) / TAU;
+    // like the end of a chocolate cornet: a pale rim of shell around a dark brown filling, softly blended
+    const m = 1 - smooth(0.5, 0.78, r + 0.04 * Math.sin(a * TAU * 3));
+    const sh = 0.86 + 0.14 * r;                                      // a touch darker deeper in
+    for (let k = 0; k < 3; k++) mc[i * 3 + k] = (light[k] + (dark[k] * 0.75 - light[k]) * m) * sh;
+  }
+  mouthGeo.setAttribute('color', new THREE.BufferAttribute(mc, 3));
+  const mouth = new THREE.Mesh(mouthGeo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5 }));
+  mouth.rotation.x = Math.PI / 2; mouth.position.y = 0.006; shell.add(mouth);
   g.add(shell);
   // the animal: claws, legs, eye stalks; this part pulls into the shell
   const animal = new THREE.Group(); animal.position.set(0, 0.03, -0.03);
@@ -2540,18 +2555,22 @@ function updateCreatures(dt) {
     if (dist < 5 && !h.seen) { h.seen = true; meet('hermit', 'ヤドカリが貝殻に引っ込んだ'); }
     if (dist < 3.4) { h.state = 'hide'; h.calm = 0; }
     else if (h.state === 'hide') { h.calm += dt; if (h.calm > 3 + Math.random() * 0.02) h.state = 'walk'; }
-    const target = h.state === 'hide' ? 0 : 1;
+    // now and then a short rest while walking: tucks in a little too
+    h.restT = (h.restT ?? 3 + Math.random() * 5) - dt;
+    if (h.restT < 0) { h.resting = !h.resting; h.restT = h.resting ? 2 + Math.random() * 2.5 : 5 + Math.random() * 6; }
+    const target = h.state === 'hide' || h.resting ? 0 : 1;
     h.out += (target - h.out) * Math.min(1, dt * (target ? 2 : 12));
     let speed = 0;
-    if (h.state === 'walk' && h.out > 0.9) {
+    if (h.state === 'walk' && !h.resting && h.out > 0.9) {
       speed = 0.11;
       h.face += (Math.sin(h.t * 0.7 + h.x) * 0.6) * dt;
       h.x += -Math.sin(h.face) * speed * dt; h.z += -Math.cos(h.face) * speed * dt;
       const d = h.x - shoreX(h.z); if (d > -0.8) h.face += dt * 1.5; if (d < -15) h.face -= dt * 1.5;
       h.phase += dt * 14;
     }
-    h.m.animal.scale.setScalar(Math.max(0.001, h.out));
-    h.m.animal.position.z = -0.03 * h.out + 0.01;
+    // out = 1: claws, legs and eyes out of the shell; out = 0: tucked in, only the claws peek out of the mouth
+    h.m.animal.position.z = 0.036 - 0.032 * h.out;
+    for (const l of h.m.legs) l.pivot.scale.setScalar(0.25 + 0.75 * h.out);
     for (const l of h.m.legs) l.pivot.rotation.y = speed ? Math.sin(h.phase + l.i * Math.PI + (l.sx > 0 ? Math.PI / 2 : 0)) * 0.4 : 0;
     const bob = speed ? Math.abs(Math.sin(h.phase)) * 0.003 : 0;
     h.g.position.set(h.x, heightAt(h.x, h.z) + bob - (1 - h.out) * 0.012, h.z);
@@ -2642,7 +2661,8 @@ function applyTime(t) {
     oceanMat.uniforms.uSpecPow.value = 200; oceanMat.uniforms.uSpecInt.value = 12;     // a long golden glitter path
     oceanMat.uniforms.uSunCol.value.setRGB(1.0, 0.58, 0.24); oceanMat.uniforms.uSurf.value.setRGB(1.0, 0.72, 0.6);
     swashUniforms.uLight.value.setRGB(0.75, 0.55, 0.5); swashUniforms.uSunCol.value.setRGB(1.0, 0.6, 0.3); swashUniforms.uSkyCol.value.copy(HORIZON);
-    cloudMat.uniforms.uBright.value.setRGB(2.2, 0.9, 0.5); cloudMat.uniforms.uShade.value.setRGB(0.36, 0.22, 0.36); cloudMat.uniforms.uAlpha.value = 1; cloudMat.uniforms.uCov.value = 0.03;
+    cloudMat.uniforms.uBright.value.setRGB(2.2, 0.9, 0.5); cloudMat.uniforms.uShade.value.setRGB(0.36, 0.22, 0.36);
+    trailMat.uniforms.uCol.value.setRGB(2.1, 0.95, 0.55);                       // contrails glow in the sunset colour, like the clouds cloudMat.uniforms.uAlpha.value = 1; cloudMat.uniforms.uCov.value = 0.03;
     for (const b of plovers) spawnPlover(b, true);
     for (const b of terns) spawnTern(b);
   } else if (isNight) {
@@ -2677,6 +2697,7 @@ function applyTime(t) {
     oceanMat.uniforms.uSpecPow.value = 600; oceanMat.uniforms.uSpecInt.value = 14;
     oceanMat.uniforms.uSunCol.value.setRGB(1, 0.96, 0.88); oceanMat.uniforms.uSurf.value.setRGB(1.15, 1.15, 1.15);
     swashUniforms.uLight.value.setRGB(1, 1, 1); swashUniforms.uSunCol.value.setRGB(1.0, 0.96, 0.88); swashUniforms.uSkyCol.value.copy(HORIZON);
+    trailMat.uniforms.uCol.value.setRGB(1.6, 1.62, 1.66);
     cloudMat.uniforms.uBright.value.setRGB(2.2, 2.2, 2.15); cloudMat.uniforms.uShade.value.setRGB(0.62, 0.7, 0.86); cloudMat.uniforms.uAlpha.value = 1; cloudMat.uniforms.uCov.value = 0;
     for (const b of plovers) spawnPlover(b, true);
     for (const b of terns) spawnTern(b);
