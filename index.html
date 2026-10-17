@@ -1508,23 +1508,31 @@ const printMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.29, 0.125).r
   new THREE.MeshStandardMaterial({ map: printTex, transparent: true, depthWrite: false, roughness: 1, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, side: THREE.DoubleSide, opacity: 0.8 }), MAXP);
 printMesh.frustumCulled = false; printMesh.count = 0; printMesh.renderOrder = 1; printMesh.receiveShadow = true;
 scene.add(printMesh);
+// left feet: the same print with its texture mirrored (instead of a negative scale, which would flip the face and light it differently)
+const printGeoL = printMesh.geometry.clone();
+{ const uv = printGeoL.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setX(i, 1 - uv.getX(i)); }
+const printMeshL = new THREE.InstancedMesh(printGeoL, printMesh.material, MAXP);
+printMeshL.frustumCulled = false; printMeshL.count = 0; printMeshL.renderOrder = 1; printMeshL.receiveShadow = true;
+scene.add(printMeshL);
+const printsDirty = () => { printMesh.instanceMatrix.needsUpdate = true; printMeshL.instanceMatrix.needsUpdate = true; };
 const prints = [];
 let printHead = 0;
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _p = new THREE.Vector3(), _s = new THREE.Vector3(1, 1, 1), _n = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
 const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
 function writePrint(i) {
   const f = prints[i];
-  if (!f.alive) { printMesh.setMatrixAt(i, ZERO); return; }
+  if (!f.alive) { printMesh.setMatrixAt(i, ZERO); printMeshL.setMatrixAt(i, ZERO); return; }
   const e = 0.3;
   _n.set(heightAt(f.x - e, f.z) - heightAt(f.x + e, f.z), 2 * e, heightAt(f.x, f.z - e) - heightAt(f.x, f.z + e)).normalize();
   _q.setFromUnitVectors(UP, _n); _q2.setFromAxisAngle(UP, f.yaw + Math.PI / 2); _q.multiply(_q2);
-  _p.set(f.x, heightAt(f.x, f.z) + 0.012, f.z); _s.set(f.side, 1, 1);
-  _m.compose(_p, _q, _s); printMesh.setMatrixAt(i, _m);
+  _p.set(f.x, heightAt(f.x, f.z) + 0.012, f.z); _s.set(1, 1, 1);
+  _m.compose(_p, _q, _s);
+  (f.side < 0 ? printMeshL : printMesh).setMatrixAt(i, _m); (f.side < 0 ? printMesh : printMeshL).setMatrixAt(i, ZERO);
 }
 function addPrint(x, z, yaw, side) {
   const i = printHead; printHead = (printHead + 1) % MAXP;
   prints[i] = { x, z, yaw, side, alive: true };
-  writePrint(i); printMesh.count = Math.max(printMesh.count, i + 1); printMesh.instanceMatrix.needsUpdate = true;
+  writePrint(i); printMesh.count = printMeshL.count = Math.max(printMesh.count, i + 1); printsDirty();
 }
 
 /* ================= creatures ================= */
@@ -2658,7 +2666,7 @@ function frame() {
   const wrap = dz => {
     player.z += dz; tower.off += dz; if (step) { step.fz += dz; step.tz += dz; }
     for (let i = 0; i < prints.length; i++) if (prints[i]) { prints[i].z += dz; writePrint(i); }
-    printMesh.instanceMatrix.needsUpdate = true; shiftCreatures(dz);
+    printsDirty(); shiftCreatures(dz);
     cloudMat.uniforms.uShift.value.y += dz;                                     // clouds stay where they were in the sky
     towerDone = new Set([...towerDone].map(id => id + Math.round(dz / PERIOD)));
     lapNo = Math.max(1, lapNo + Math.round(dz / PERIOD));                       // walking on into the next stretch of beach = the next lap
@@ -2738,7 +2746,7 @@ function frame() {
     const f = prints[i]; if (!f || !f.alive) continue;
     if (heightAt(f.x, f.z) < ws.level - 0.03) { f.alive = false; writePrint(i); dirty = true; }
   }
-  if (dirty) printMesh.instanceMatrix.needsUpdate = true;
+  if (dirty) printsDirty();
 
   updateCreatures(dt); updateFish(dt); updateJet(dt);
   flameMat.uniforms.uTime.value = worldTime;
