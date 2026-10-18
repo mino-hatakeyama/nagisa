@@ -2709,7 +2709,8 @@ function applyTime(t) {
     oceanMat.uniforms.uSunCol.value.setRGB(1.0, 0.58, 0.24); oceanMat.uniforms.uSurf.value.setRGB(1.0, 0.72, 0.6);
     swashUniforms.uLight.value.setRGB(0.75, 0.55, 0.5); swashUniforms.uSunCol.value.setRGB(1.0, 0.6, 0.3); swashUniforms.uSkyCol.value.copy(HORIZON);
     cloudMat.uniforms.uBright.value.setRGB(2.2, 0.9, 0.5); cloudMat.uniforms.uShade.value.setRGB(0.36, 0.22, 0.36);
-    trailMat.uniforms.uCol.value.setRGB(2.1, 0.95, 0.55);                       // contrails glow in the sunset colour, like the clouds cloudMat.uniforms.uAlpha.value = 1; cloudMat.uniforms.uCov.value = 0.03;
+    cloudMat.uniforms.uAlpha.value = 1; cloudMat.uniforms.uCov.value = 0.03;
+    trailMat.uniforms.uCol.value.setRGB(2.1, 0.95, 0.55);                       // contrails glow in the sunset colour, like the clouds
     for (const b of plovers) spawnPlover(b, true);
     for (const b of terns) spawnTern(b);
   } else if (isNight) {
