@@ -146,7 +146,7 @@
 <div class="hud hud-top">
   <div class="meter" aria-live="polite">
     <div class="row top"><span><b id="steps">0</b> 歩</span><span><b id="dist">0.0</b> m</span><span class="jet">次の飛行機 <b id="jetEta">--:--</b></span></div>
-    <div class="row seen"><span>カニ <b id="cCrab">0</b></span><span>ヤドカリ <b id="cHermit">0</b></span><span>鳥 <b id="cBird">0</b></span><span>浜昼顔 <b id="cFlower">0</b></span><span>小魚 <b id="cFish">0</b></span><span>スズメダイ <b id="cDamsel">0</b></span></div>
+    <div class="row seen"><span>カニ <b id="cCrab">0</b></span><span>ヤドカリ <b id="cHermit">0</b></span><span>鳥 <b id="cBird">0</b></span><span>浜昼顔 <b id="cFlower">0</b></span><span>小魚 <b id="cFish">0</b></span><span>岩の魚 <b id="cDamsel">0</b></span></div>
   </div>
   <button class="mute" id="mute" type="button">音あり</button>
 </div>
@@ -562,7 +562,7 @@ const ZENITH = new THREE.Color(0.06, 0.26, 0.95), HORIZON = new THREE.Color(0.6,
 
 /* ================= lagoon: clear shallow water over white sand, coral patches, reef surf ================= */
 const oceanMat = new THREE.ShaderMaterial({
-  fog: true,
+  fog: true, transparent: true, depthWrite: false,     // see-through at its very edge, and fish can swim beneath it
   uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
     uTime: { value: 0 }, uSunDir: { value: sunDir.clone() }, uSunCol: { value: new THREE.Color(1, 0.96, 0.88) },
     uZenith: { value: ZENITH }, uHorizon: { value: HORIZON }, uNormals: { value: waterNormals }, uBed: { value: 1.1 },
@@ -579,9 +579,21 @@ const oceanMat = new THREE.ShaderMaterial({
     varying vec3 vW;
     #include <fog_pars_fragment>
     ${GLSL_NOISE}
+    float groundAt(vec2 w){            // the beach height near the water, evaluated per pixel so the waterline is a smooth curve
+      float x = w.x, z = w.y, k = 0.0078539816, d = x - shoreX(z);
+      float h = d > 0.0 ? -1.9*(1.0 - exp(-d/24.0)) : -d*0.06;
+      float t = clamp((d + 2.0)/(-8.0), 0.0, 1.0); t = t*t*(3.0 - 2.0*t);
+      h += 0.1*sin(x*0.31 + z*k*80.0)*sin(z*k*62.0 + 0.7)*t;
+      h += 0.06*sin(z*k*120.0)*exp(-(d + 3.0)*(d + 3.0)/8.0);
+      return h;
+    }
     void main(){
       vec2 wp = vW.xz;
       float d = wp.x - shoreX(wp.y);
+      // where the sea meets the sand: worked out per pixel from the true sand height, so the edge is a smooth curve
+      // and the water thins out over the last few centimetres instead of stopping at a hard line
+      float edgeA = d < 4.0 ? smoothstep(0.035, -0.045, groundAt(wp) + 0.012*sin(wp.x*2.3 + wp.y*1.7 + uTime*0.6)) : 1.0;
+      if (edgeA < 0.004) discard;
       float reefD = 165.0 + 12.0*sin(wp.y*0.011) + 6.0*sin(wp.y*0.037 + 1.0);
       float coral = smoothstep(0.54, 0.68, fbm(wp*0.045)) * smoothstep(22.0, 70.0, d);
       float depth = 1.9*(1.0 - exp(-max(d, 0.0)/24.0)) + smoothstep(40.0, reefD, d)*1.4 - coral*0.6;
@@ -609,14 +621,14 @@ const oceanMat = new THREE.ShaderMaterial({
       float surf = (1.0 - smoothstep(0.0, 4.5, rb)) * smoothstep(0.35, 0.62, fbm(wp*0.25 + vec2(uTime*0.35, 0.0)));
       surf *= 0.55 + 0.45*sin(uTime*0.6 + wp.y*0.02);
       col = mix(col, uSurf, clamp(surf, 0.0, 1.0));
-      gl_FragColor = vec4(col, 1.0);
+      gl_FragColor = vec4(col, edgeA);
       #include <tonemapping_fragment>
       #include <colorspace_fragment>
       #include <fog_fragment>
     }`
 });
 const ocean = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000, 180, 180).rotateX(-Math.PI / 2), oceanMat);
-ocean.frustumCulled = false;
+ocean.frustumCulled = false; ocean.renderOrder = 0;
 scene.add(ocean);
 
 /* ================= swash: thin sheet running up the sand, foam at its edge ================= */
@@ -1897,10 +1909,11 @@ function updateFish(dt) {
     const h = f.hdg + Math.sin(f.ph) * (0.1 + 0.12 * Math.min(1, f.v));
     const a = Math.atan2(Math.sin(h), -Math.cos(h));
     _fq.setFromAxisAngle(UP, f.hdg !== undefined ? Math.atan2(Math.sin(f.hdg), -Math.cos(f.hdg)) : a); _fs.set(f.len, f.len, f.len);
-    _fp.set(x, 0.022, z); _fm.compose(_fp, _fq, _fs); fishMesh.setMatrixAt(i, _fm);
+    const gz = heightAt(x, z);
+    _fp.set(x, Math.min(-0.022, Math.max(gz + 0.035, -0.05)), z); _fm.compose(_fp, _fq, _fs); fishMesh.setMatrixAt(i, _fm);   // under the surface, clear of the bottom
     fishPh.setX(i, f.ph);
     _fq.setFromAxisAngle(UP, a); _fs.set(f.len, 1, f.len);
-    _fp.set(x + shx, 0.012, z + shz); _fm.compose(_fp, _fq, _fs); fishShadow.setMatrixAt(i, _fm);
+    _fp.set(x + shx, heightAt(x + shx, z + shz) + 0.012, z + shz); _fm.compose(_fp, _fq, _fs); fishShadow.setMatrixAt(i, _fm);   // on the sandy bottom
   });
   fishMesh.count = fishShadow.count = s.fish.length;
   fishMesh.instanceMatrix.needsUpdate = fishShadow.instanceMatrix.needsUpdate = true; fishPh.needsUpdate = true;
@@ -1960,9 +1973,70 @@ const damselShadowMat = new THREE.MeshBasicMaterial({ map: damselShadowTex, colo
 const damselShadow = new THREE.InstancedMesh(new THREE.PlaneGeometry(1.3, 0.87).translate(0.05, 0, 0).rotateX(-Math.PI / 2), damselShadowMat, DAMS);
 damselShadow.frustumCulled = false; damselShadow.renderOrder = 1; damselShadow.count = 0; scene.add(damselShadow);
 
+// ツノダシ (Moorish idol, Zanclus cornutus): a tall, paper-thin disc with a pointed snout, bold black and white bands,
+// a yellow saddle at the back and a long white streamer trailing from the dorsal fin. Head toward -x, length 1 before scaling.
+const idolGeo = (() => {
+  const sh = new THREE.Shape();
+  sh.moveTo(-0.56, 0.0);                                    // snout tip
+  sh.bezierCurveTo(-0.5, 0.06, -0.4, 0.12, -0.33, 0.26);     // up the snout to the forehead
+  sh.bezierCurveTo(-0.24, 0.44, -0.1, 0.52, 0.0, 0.5);       // high back
+  sh.bezierCurveTo(0.12, 0.42, 0.26, 0.2, 0.3, 0.06);        // down to the tail root
+  sh.lineTo(0.32, -0.05);
+  sh.bezierCurveTo(0.24, -0.2, 0.12, -0.4, 0.02, -0.42);     // anal fin
+  sh.bezierCurveTo(-0.12, -0.36, -0.28, -0.2, -0.4, -0.08);
+  sh.bezierCurveTo(-0.46, -0.04, -0.52, -0.02, -0.56, 0.0);
+  const body = new THREE.ExtrudeGeometry(sh, { depth: 0.03, bevelEnabled: true, bevelThickness: 0.02, bevelSize: 0.015, bevelSegments: 3, curveSegments: 16 });
+  body.translate(0, 0, -0.015);
+  const tail = new THREE.BufferGeometry();
+  tail.setAttribute('position', new THREE.Float32BufferAttribute([0.3, 0.05, 0, 0.3, -0.05, 0, 0.47, 0.13, 0, 0.47, -0.13, 0, 0.44, 0, 0], 3));
+  tail.setIndex([0, 1, 4, 0, 4, 2, 1, 3, 4]);
+  // the streamer: a thin curved ribbon sweeping up and back from the top of the back
+  const sp = [], si = [];
+  for (let k = 0; k <= 12; k++) {
+    const t = k / 12, x = -0.02 + t * 0.62, y = 0.5 + Math.sin(t * Math.PI * 0.9) * 0.16 - t * t * 0.18, w = 0.035 * (1 - t) + 0.006;
+    sp.push(x - w, y, 0, x + w * 0.4, y - w * 1.6, 0);
+    if (k) { const a = (k - 1) * 2; si.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  }
+  const streamer = new THREE.BufferGeometry(); streamer.setAttribute('position', new THREE.Float32BufferAttribute(sp, 3)); streamer.setIndex(si);
+  const eye = new THREE.SphereGeometry(0.03, 8, 6);
+  const parts = [body, tail, streamer, eye.clone().translate(-0.29, 0.13, 0.035), eye.clone().translate(-0.29, 0.13, -0.035)];
+  for (const g of parts) { g.computeVertexNormals(); if (g.attributes.uv) g.deleteAttribute('uv'); }
+  const geo = mergeGeometries(parts.map(g => g.index ? g.toNonIndexed() : g));   // the extruded body has no index already
+  // the pattern is painted on a picture laid flat across the side of the fish
+  const Q = geo.attributes.position, uv = new Float32Array(Q.count * 2);
+  for (let i = 0; i < Q.count; i++) { uv[i * 2] = (Q.getX(i) + 0.6) / 1.25; uv[i * 2 + 1] = (Q.getY(i) + 0.5) / 1.25; }
+  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  return geo;
+})();
+const idolTex = (() => {
+  const W = 256, cv = document.createElement('canvas'); cv.width = cv.height = W;
+  const g = cv.getContext('2d'), X = x => (x + 0.6) / 1.25 * W, Y = y => W - (y + 0.5) / 1.25 * W;
+  g.fillStyle = '#f2f0e4'; g.fillRect(0, 0, W, W);                                   // white body
+  { const gr = g.createLinearGradient(0, Y(0.42), 0, Y(-0.05));                      // yellow on the upper back, fading to white below
+    gr.addColorStop(0, '#ffd21f'); gr.addColorStop(0.55, '#ffd84a'); gr.addColorStop(1, 'rgba(255,230,120,0)');
+    g.fillStyle = gr; g.fillRect(X(-0.02), 0, X(0.13) - X(-0.02), Y(-0.05)); }
+  { const gr = g.createLinearGradient(0, Y(-0.12), 0, Y(-0.42)); gr.addColorStop(0, 'rgba(255,220,80,0)'); gr.addColorStop(1, '#ffd84a');
+    g.fillStyle = gr; g.fillRect(X(-0.02), Y(-0.12), X(0.13) - X(-0.02), W); }       // a touch of yellow on the anal fin
+  g.fillStyle = '#0a0a0c';
+  g.fillRect(X(-0.33), 0, X(-0.15) - X(-0.33), W);                                    // two broad black bands
+  g.fillRect(X(0.13), 0, X(0.27) - X(0.13), W);
+  g.fillRect(X(0.3), Y(0.16), X(0.45) - X(0.3), Y(-0.16) - Y(0.16));                 // black tail…
+  g.fillStyle = '#f2f0e4'; g.fillRect(X(0.43), Y(0.16), X(0.5) - X(0.43), Y(-0.16) - Y(0.16));   // …with a pale edge
+  g.fillStyle = '#f08a2a'; g.beginPath(); g.ellipse(X(-0.5), Y(0.02), 7, 5, 0, 0, TAU); g.fill();   // orange spot on the snout
+  g.fillStyle = '#0a0a0c'; g.beginPath(); g.arc(X(-0.29), Y(0.13), 5, 0, TAU); g.fill();         // eye
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; return t;
+})();
+const idolMat = new THREE.MeshStandardMaterial({ map: idolTex, roughness: 0.45, metalness: 0.05, envMapIntensity: 0.5, side: THREE.DoubleSide, transparent: true, opacity: 0.97,
+  polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6 });
+idolMat.color.setRGB(0.93, 0.97, 0.96);
+const IDOLS = 2, idolMesh = new THREE.InstancedMesh(idolGeo, idolMat, IDOLS);
+idolMesh.frustumCulled = false; idolMesh.renderOrder = 1; idolMesh.count = 0; scene.add(idolMesh);
+const idolShadow = new THREE.InstancedMesh(new THREE.PlaneGeometry(1.0, 0.25).rotateX(-Math.PI / 2), damselShadowMat, IDOLS);
+idolShadow.frustumCulled = false; idolShadow.renderOrder = 1; idolShadow.count = 0; scene.add(idolShadow);
+
 // They live round the rocks standing in the shallows. Now and then a little group of 2-4 shows up at a rock ahead:
 // they hover by the rock, turn this way and that, dart a short way now and then, and slip round behind it when you come close.
-const damsel = { alive: false, wait: 8, used: new Map(), fish: [] };
+const damsel = { alive: false, wait: 8, used: new Map(), fish: [], idols: [] };
 const damselRocks = rockSpots.map((c, i) => ({ ...c, i })).filter(c => { const d = c.x - shoreX(c.z); return d > 1.5 && d < 7.5 && c.r > 0.55 && ((c.i * 2654435761) % 997) / 997 < 0.6; });
 function spawnDamsels() {
   const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
@@ -1981,12 +2055,18 @@ function spawnDamsels() {
     const a = Math.random() * TAU, rad = c.r * (0.95 + Math.random() * 0.35);
     return { a, rad, ta: a, trad: rad, hdg: a + Math.PI / 2, x: c.x + Math.cos(a) * rad, z: rz + Math.sin(a) * rad, next: 1 + Math.random() * 3, ph: Math.random() * TAU, len: 0.068 + Math.random() * 0.016 };
   });
+  // now and then one or two ツノダシ keep them company, a little farther out from the rock
+  const ni = Math.random() < 0.45 ? (Math.random() < 0.6 ? 1 : 2) : 0;
+  damsel.idols = Array.from({ length: ni }, () => {
+    const a = Math.random() * TAU, rad = c.r * (1.15 + Math.random() * 0.35);
+    return { a, rad, ta: a, trad: rad, hdg: a + Math.PI / 2, x: c.x + Math.cos(a) * rad, z: rz + Math.sin(a) * rad, next: 2 + Math.random() * 3, ph: Math.random() * TAU, len: 0.13 + Math.random() * 0.04, idol: true };
+  });
 }
-const _dq = new THREE.Quaternion(), _dp = new THREE.Vector3(), _ds = new THREE.Vector3(), _dm = new THREE.Matrix4();
+const _de = new THREE.Euler(), _dq = new THREE.Quaternion(), _dp = new THREE.Vector3(), _ds = new THREE.Vector3(), _dm = new THREE.Matrix4();
 function updateDamsels(dt) {
-  if (isNight) { damselMesh.count = damselShadow.count = 0; damsel.alive = false; return; }
+  if (isNight) { damselMesh.count = damselShadow.count = idolMesh.count = idolShadow.count = 0; damsel.alive = false; return; }
   if (!damsel.alive) {
-    damsel.wait -= dt; damselMesh.count = damselShadow.count = 0;
+    damsel.wait -= dt; damselMesh.count = damselShadow.count = idolMesh.count = idolShadow.count = 0;
     if (damsel.wait < 0) spawnDamsels();
     return;
   }
@@ -1995,15 +2075,15 @@ function updateDamsels(dt) {
   const leaving = dPl > 34;
   D.out += ((leaving ? 0 : 1) - D.out) * Math.min(1, dt * (leaving ? 1.5 : 0.8));
   if (leaving && D.out < 0.02) { D.alive = false; D.wait = 20 + Math.random() * 40; return; }
-  if (!D.seen && dPl < 6) { D.seen = true; meet('damsel', '岩のまわりにシリキルリスズメダイ'); }
+  if (!D.seen && dPl < 6) { D.seen = true; meet('damsel', D.idols.length ? '岩のまわりにツノダシとシリキルリスズメダイ' : '岩のまわりにシリキルリスズメダイ'); }
   const away = Math.atan2(D.rz - player.z, D.rx - player.x);                      // the far side of the rock, seen from you
   const shx = -sunDir.x / sunDir.y * 0.12, shz = -sunDir.z / sunDir.y * 0.12;
-  D.fish.forEach((f, i) => {
+  const swim = (list, mesh, shadow, y) => list.forEach((f, i) => {
     const fd = Math.hypot(f.x - player.x, f.z - player.z);
     f.next -= dt;
-    if (fd < 2.4) { f.ta = away + (i - 1.5) * 0.35; f.trad = D.rr * 1.0; f.next = 2 + Math.random() * 2; f.fast = 1; }   // hide behind the rock
+    if (fd < 2.4) { f.ta = away + (i - 1.5) * 0.35; f.trad = D.rr * (f.idol ? 1.15 : 1.0); f.next = 2 + Math.random() * 2; f.fast = 1; }   // hide behind the rock
     else if (f.next < 0) {                                                           // a short dart to a new spot by the rock
-      f.ta = f.a + (Math.random() - 0.5) * 1.4; f.trad = D.rr * (0.95 + Math.random() * 0.4); f.next = 1.5 + Math.random() * 3.5; f.fast = 0;
+      f.ta = f.a + (Math.random() - 0.5) * 1.4; f.trad = D.rr * (f.idol ? 1.15 + Math.random() * 0.35 : 0.95 + Math.random() * 0.4); f.next = (f.idol ? 2.5 : 1.5) + Math.random() * 3.5; f.fast = 0;
     }
     const da = Math.atan2(Math.sin(f.ta - f.a), Math.cos(f.ta - f.a));
     const rate = f.fast ? 2.4 : 1.1;
@@ -2018,14 +2098,22 @@ function updateDamsels(dt) {
     f.hdg += Math.atan2(Math.sin(want - f.hdg), Math.cos(want - f.hdg)) * Math.min(1, dt * 6);
     f.x = nx; f.z = nz;
     const h = f.hdg + Math.sin(f.ph) * 0.12;
-    _dq.setFromAxisAngle(UP, Math.atan2(Math.sin(h), -Math.cos(h)));
+    const yaw = Math.atan2(Math.sin(h), -Math.cos(h));
+    const IDOL_LEAN = 0;                            // 0 = swims upright (0.4 leaned it toward you, but the lean flipped side to side as you walked past)
+    if (f.idol && IDOL_LEAN) {                      // a tall, paper-thin fish: lean it a little so its side shows to you, not just its back
+      const sx = Math.sin(yaw), sz = Math.cos(yaw), vx = camera.position.x - f.x, vy = camera.position.y - y, vz = camera.position.z - f.z, side = vx * sx + vz * sz;
+      _de.set(-Math.max(-1, Math.min(1, Math.atan2(vy, Math.abs(side)) * Math.sign(side || 1) * IDOL_LEAN)), yaw, 0, 'YXZ'); _dq.setFromEuler(_de);
+    } else _dq.setFromAxisAngle(UP, yaw);
     const L = f.len * D.out; _ds.set(L, L, L);
-    _dp.set(f.x, 0.025, f.z); _dm.compose(_dp, _dq, _ds); damselMesh.setMatrixAt(i, _dm);
-    _dp.set(f.x + shx, 0.012, f.z + shz); _dm.compose(_dp, _dq, _ds); damselShadow.setMatrixAt(i, _dm);
+    const gz = heightAt(f.x, f.z), fy = f.idol ? Math.min(-0.03, Math.max(gz + 0.45 * f.len, -(0.66 * f.len + 0.02))) : Math.min(-0.025, Math.max(gz + 0.03, -0.055));
+    _dp.set(f.x, fy, f.z); _dm.compose(_dp, _dq, _ds); mesh.setMatrixAt(i, _dm);   // fully under the water, streamer and all
+    _dp.set(f.x + shx, heightAt(f.x + shx, f.z + shz) + 0.012, f.z + shz); _dm.compose(_dp, _dq, _ds); shadow.setMatrixAt(i, _dm);
   });
-  damselMat.opacity = 0.92 * Math.min(1, D.out * 1.5); damselShadowMat.opacity = 0.45 * D.out;
-  damselMesh.count = damselShadow.count = D.fish.length;
-  damselMesh.instanceMatrix.needsUpdate = damselShadow.instanceMatrix.needsUpdate = true;
+  swim(D.fish, damselMesh, damselShadow, 0.025); swim(D.idols, idolMesh, idolShadow, 0.03);
+
+  damselMat.opacity = 0.92 * Math.min(1, D.out * 1.5); idolMat.opacity = 0.97 * Math.min(1, D.out * 1.5); damselShadowMat.opacity = 0.45 * D.out;
+  damselMesh.count = damselShadow.count = D.fish.length; idolMesh.count = idolShadow.count = D.idols.length;
+  for (const m of [damselMesh, damselShadow, idolMesh, idolShadow]) m.instanceMatrix.needsUpdate = true;
 }
 const crabs = [], plovers = [], terns = [];
 const tmpV = new THREE.Vector3();
@@ -2814,7 +2902,7 @@ function updateCreatures(dt) {
 }
 function shiftCreatures(dz) {
   jet.group.position.z += dz;
-  if (damsel.alive) { damsel.rz += dz; for (const f of damsel.fish) f.z += dz; }
+  if (damsel.alive) { damsel.rz += dz; for (const f of damsel.fish) f.z += dz; for (const f of damsel.idols) f.z += dz; }
   for (const c of crabs) c.z += dz;
   for (const h of hermits) h.z += dz;
   if (school.alive) { school.cz += dz; for (const f of school.fish) f.z += dz; }
