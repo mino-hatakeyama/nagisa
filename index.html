@@ -130,6 +130,12 @@
   .go:hover{filter:brightness(1.06)}
   .go[disabled]{opacity:.5;cursor:progress}
   #err[hidden]{display:none}
+  #cam{position:fixed;left:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 12px);z-index:6;width:180px;border-radius:10px;overflow:hidden;
+    background:rgba(0,20,30,.45);border:1px solid var(--line);display:none;pointer-events:none}
+  #cam.on{display:block}
+  #cam video{width:100%;display:block;transform:scaleX(-1);opacity:.85}
+  #cam span{position:absolute;left:0;right:0;bottom:0;font-size:11px;letter-spacing:.04em;color:#fff;background:rgba(0,20,30,.55);padding:3px 6px;text-align:center}
+  #cam.look{border-color:#ffd27a}
   #err{position:fixed;inset:0;display:grid;place-items:center;padding:0 16px;text-align:center;z-index:20;background:var(--deep)}
 </style>
 
@@ -140,7 +146,7 @@
 <div class="hud hud-top">
   <div class="meter" aria-live="polite">
     <div class="row top"><span><b id="steps">0</b> 歩</span><span><b id="dist">0.0</b> m</span><span class="jet">次の飛行機 <b id="jetEta">--:--</b></span></div>
-    <div class="row seen"><span>カニ <b id="cCrab">0</b></span><span>ヤドカリ <b id="cHermit">0</b></span><span>鳥 <b id="cBird">0</b></span><span>浜昼顔 <b id="cFlower">0</b></span><span>小魚 <b id="cFish">0</b></span></div>
+    <div class="row seen"><span>カニ <b id="cCrab">0</b></span><span>ヤドカリ <b id="cHermit">0</b></span><span>鳥 <b id="cBird">0</b></span><span>浜昼顔 <b id="cFlower">0</b></span><span>小魚 <b id="cFish">0</b></span><span>スズメダイ <b id="cDamsel">0</b></span></div>
   </div>
   <button class="mute" id="mute" type="button">音あり</button>
 </div>
@@ -169,6 +175,7 @@
         <button class="time" type="button" role="radio" aria-checked="false" data-time="crescent">夜</button>
       </div>
       <label class="alt"><input type="checkbox" id="altRule" checked> 左右交互ルール <small>（オフにすると同じ足が続いても一歩になります）</small></label>
+      <label class="alt"><input type="checkbox" id="useCam"> Webカメラで操作（MediaPipe） <small>（腕ふりで前へ。片手をパーにしてカメラに向け、動かすと見回せます）</small></label>
     </div>
     <div class="how">
       <span><kbd>J</kbd><kbd>K</kbd>で一歩ずつ（左足 J・右足 K。J か K を押してもスタート）</span>
@@ -178,6 +185,7 @@
     <button class="go" id="go" type="button" disabled>読み込み中…</button>
   </div>
 </div>
+<div id="cam" aria-hidden="true"><video id="camVid" playsinline muted></video><span id="camMsg">カメラを準備中…</span></div>
 <div id="err" hidden><p>このブラウザでは 3D 表示（WebGL）を使えないようです。別のブラウザでお試しください。</p></div>
 
 <script type="importmap">
@@ -1778,7 +1786,54 @@ const fishGeo = new THREE.PlaneGeometry(1, 0.375).rotateX(-Math.PI / 2);
 const fishMat = new THREE.MeshBasicMaterial({ map: fishTex, color: 0x34494e, transparent: true, opacity: 0, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6 });
 const fishShadowMat = new THREE.MeshBasicMaterial({ map: fishShadowTex, color: 0x14262b, transparent: true, opacity: 0, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6 });
 const MAXF = 12;
-const fishMesh = new THREE.InstancedMesh(fishGeo, fishMat, MAXF), fishShadow = new THREE.InstancedMesh(fishGeo, fishShadowMat, MAXF);
+// 3D fish: a slim, side-flattened spindle with a forked tail, dark green-blue on the back and silver below.
+// Head toward -x, tail toward +x (the same way round as the old flat picture), length 1 before scaling.
+const fish3DGeo = (() => {
+  const prof = [];
+  for (let i = 0; i <= 16; i++) {
+    const t = i / 16, x = -0.5 + t * 0.82;                      // body from the snout (-0.5) to the tail root (0.32)
+    const r = 0.085 * Math.pow(Math.sin(Math.PI * Math.min(1, Math.pow(t, 0.75) * 0.92 + 0.04)), 0.85) + 0.012 * t;
+    prof.push(new THREE.Vector2(Math.max(0.003, r), x));
+  }
+  const body = new THREE.LatheGeometry(prof, 14).rotateZ(-Math.PI / 2);   // lathe axis y → x
+  body.scale(1, 1, 0.62);                                                   // flattened side to side
+  const P = body.attributes.position;
+  for (let i = 0; i < P.count; i++) P.setY(i, P.getY(i) * (P.getY(i) > 0 ? 1.05 : 0.92));   // a fuller back than belly
+  // forked tail fin (vertical) and a small dorsal fin
+  const tail = new THREE.BufferGeometry();
+  tail.setAttribute('position', new THREE.Float32BufferAttribute([0.3, 0.02, 0, 0.3, -0.02, 0, 0.5, 0.11, 0, 0.42, 0, 0, 0.5, -0.11, 0], 3));
+  tail.setIndex([0, 1, 3, 0, 3, 2, 1, 4, 3]);
+  const dorsal = new THREE.BufferGeometry();
+  dorsal.setAttribute('position', new THREE.Float32BufferAttribute([-0.08, 0.08, 0, 0.08, 0.06, 0, 0.0, 0.14, 0], 3));
+  dorsal.setIndex([0, 1, 2]);
+  body.computeVertexNormals(); tail.computeVertexNormals(); dorsal.computeVertexNormals();
+  const parts = [body.toNonIndexed(), tail.toNonIndexed(), dorsal.toNonIndexed()];
+  for (const g of parts) if (g.attributes.uv) g.deleteAttribute('uv');
+  const geo = mergeGeometries(parts);
+  const Q = geo.attributes.position, col = new Float32Array(Q.count * 3);
+  for (let i = 0; i < Q.count; i++) {
+    const x = Q.getX(i), y = Q.getY(i);
+    const back = smooth(-0.02, 0.05, y), fin = x > 0.3 || y > 0.085 ? 1 : 0;
+    let c = [0.8 - 0.6 * back, 0.82 - 0.56 * back, 0.82 - 0.56 * back];          // silver belly → dark green-blue back
+    if (Math.abs(y - 0.012) < 0.008 && x < 0.25) c = [c[0] * 0.8, c[1] * 0.85, c[2] * 0.9];   // a faint lateral line
+    if (fin) c = [0.3, 0.36, 0.34];
+    col[i * 3] = c[0]; col[i * 3 + 1] = c[1]; col[i * 3 + 2] = c[2];
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return geo;
+})();
+const fishPh = new THREE.InstancedBufferAttribute(new Float32Array(MAXF), 1);
+fish3DGeo.setAttribute('aPh', fishPh);
+const fish3DMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.4, metalness: 0.3, envMapIntensity: 0.55, transparent: true, opacity: 0, side: THREE.DoubleSide,
+  polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6 });
+fish3DMat.color.setRGB(0.52, 0.64, 0.6);                       // seen through a few centimetres of clear sea water
+fish3DMat.onBeforeCompile = sh => {                             // the body bends in a travelling wave, most at the tail
+  sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nattribute float aPh;')
+    .replace('#include <begin_vertex>', `#include <begin_vertex>
+      float tw = clamp((transformed.x + 0.2) / 0.7, 0.0, 1.0);
+      transformed.z += sin(aPh - transformed.x * 9.0) * 0.07 * tw * tw;`);
+};
+const fishMesh = new THREE.InstancedMesh(fish3DGeo, fish3DMat, MAXF), fishShadow = new THREE.InstancedMesh(fishGeo, fishShadowMat, MAXF);
 for (const m of [fishMesh, fishShadow]) { m.frustumCulled = false; m.renderOrder = 1; m.count = 0; scene.add(m); }
 const school = { alive: false, wait: 3 };
 function spawnSchool() {
@@ -1818,7 +1873,7 @@ function updateFish(dt) {
   s.cx += Math.cos(s.dir) * speed * dt; s.cz += Math.sin(s.dir) * speed * dt;
   if (!s.seen && dPl < 6) { s.seen = true; meet('fish', '足もとの浅瀬を小魚の群れが泳いでいく'); }
   const fade = smooth(0, 1.2, s.t) * (1 - smooth(s.life - 1.5, s.life, s.t));
-  fishMat.opacity = 0.8 * fade; fishShadowMat.opacity = 0.5 * fade;
+  fish3DMat.opacity = 0.85 * fade; fishShadowMat.opacity = 0.5 * fade;
   const shx = -sunDir.x / sunDir.y * 0.22, shz = -sunDir.z / sunDir.y * 0.22;   // shadow lands a little away from the fish
   // the school's formation turns gently; each fish steers toward its slot with its own reaction time and agility
   s.fdir = s.fdir === undefined ? s.dir : s.fdir + Math.atan2(Math.sin(s.dir - s.fdir), Math.cos(s.dir - s.fdir)) * Math.min(1, dt * (s.flee > 0 ? 5 : 1.2));
@@ -1841,13 +1896,136 @@ function updateFish(dt) {
     const x = f.x, z = f.z;
     const h = f.hdg + Math.sin(f.ph) * (0.1 + 0.12 * Math.min(1, f.v));
     const a = Math.atan2(Math.sin(h), -Math.cos(h));
+    _fq.setFromAxisAngle(UP, f.hdg !== undefined ? Math.atan2(Math.sin(f.hdg), -Math.cos(f.hdg)) : a); _fs.set(f.len, f.len, f.len);
+    _fp.set(x, 0.022, z); _fm.compose(_fp, _fq, _fs); fishMesh.setMatrixAt(i, _fm);
+    fishPh.setX(i, f.ph);
     _fq.setFromAxisAngle(UP, a); _fs.set(f.len, 1, f.len);
-    _fp.set(x, 0.02, z); _fm.compose(_fp, _fq, _fs); fishMesh.setMatrixAt(i, _fm);
     _fp.set(x + shx, 0.012, z + shz); _fm.compose(_fp, _fq, _fs); fishShadow.setMatrixAt(i, _fm);
   });
   fishMesh.count = fishShadow.count = s.fish.length;
-  fishMesh.instanceMatrix.needsUpdate = fishShadow.instanceMatrix.needsUpdate = true;
+  fishMesh.instanceMatrix.needsUpdate = fishShadow.instanceMatrix.needsUpdate = true; fishPh.needsUpdate = true;
   if (s.t > s.life || dPl > 40) { s.alive = false; s.wait = 5 + Math.random() * 10; }
+}
+// シリキルリスズメダイ (Chrysiptera parasema): a deep, oval little damselfish, electric blue with a yellow tail
+const damselGeo = (() => {
+  const body = new THREE.SphereGeometry(1, 20, 14); body.scale(0.42, 0.25, 0.1);           // head toward -x
+  const P = body.attributes.position;
+  for (let i = 0; i < P.count; i++) {                                                        // blunter head, a little taper to the tail root
+    const x = P.getX(i); P.setY(i, P.getY(i) * (1 - 0.35 * Math.max(0, x / 0.42) ** 2)); P.setZ(i, P.getZ(i) * (1 - 0.3 * Math.max(0, x / 0.42) ** 2));
+    P.setX(i, x * (x < 0 ? 0.92 : 1));
+  }
+  const fin = pts => { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pts.flat(), 3)); const n = pts.length; const idx = []; for (let i = 1; i < n - 1; i++) idx.push(0, i, i + 1); g.setIndex(idx); return g; };
+  const tail = fin([[0.34, 0, 0], [0.62, 0.2, 0], [0.55, 0.0, 0], [0.62, -0.2, 0], [0.34, -0.05, 0]]);
+  const tail2 = fin([[0.34, 0.05, 0], [0.62, 0.2, 0], [0.55, 0, 0]]);
+  const dorsal = fin([[-0.18, 0.22, 0], [-0.1, 0.33, 0], [0.25, 0.32, 0], [0.38, 0.2, 0], [0.3, 0.12, 0]]);
+  const anal = fin([[0.05, -0.2, 0], [0.18, -0.3, 0], [0.36, -0.2, 0], [0.3, -0.1, 0]]);
+  const eye = new THREE.SphereGeometry(0.045, 8, 6);
+  const eyes = [eye.clone().translate(-0.27, 0.07, 0.07), eye.clone().translate(-0.27, 0.07, -0.07)];
+  const parts = [body, tail, tail2, dorsal, anal, ...eyes];
+  for (const g of parts) { g.computeVertexNormals(); if (g.attributes.uv) g.deleteAttribute('uv'); }
+  const geo = mergeGeometries(parts.map(g => g.index ? g.toNonIndexed() : g));
+  const Q = geo.attributes.position, col = new Float32Array(Q.count * 3);
+  const BL = [0.03, 0.28, 1.0], YE = [1.0, 0.86, 0.0], BK = [0.02, 0.02, 0.03];
+  let k = 0, eyeStart = Q.count - eyes.reduce((a, g) => a + (g.index ? g.index.count : g.attributes.position.count), 0);
+  for (let i = 0; i < Q.count; i++) {
+    const x = Q.getX(i), y = Q.getY(i);
+    let c;
+    if (i >= eyeStart) c = BK;
+    else {
+      const t = smooth(0.18, 0.36, x);                                   // blue body, yellow from the tail root back
+      c = [BL[0] + (YE[0] - BL[0]) * t, BL[1] + (YE[1] - BL[1]) * t, BL[2] + (YE[2] - BL[2]) * t];
+      const belly = smooth(-0.05, -0.22, y) * (1 - t) * 0.25;             // a slightly paler belly
+      c = [c[0] + belly, c[1] + belly, c[2]];
+    }
+    col[i * 3] = c[0]; col[i * 3 + 1] = c[1]; col[i * 3 + 2] = c[2];
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return geo;
+})();
+const damselMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0.15, envMapIntensity: 0.6, side: THREE.DoubleSide, transparent: true, opacity: 0.92,
+  polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6 });
+damselMat.color.setRGB(0.92, 0.98, 1.0);
+damselMat.emissive.setRGB(0.02, 0.06, 0.2);
+const DAMS = 6, damselMesh = new THREE.InstancedMesh(damselGeo, damselMat, DAMS);
+damselMesh.frustumCulled = false; damselMesh.renderOrder = 1; damselMesh.count = 0; scene.add(damselMesh);
+// its soft shadow on the sandy bottom, a little off to the side like the small fish's
+const damselShadowTex = (() => {
+  const cv = document.createElement('canvas'); cv.width = 96; cv.height = 64;
+  const g = cv.getContext('2d'); g.filter = 'blur(4px)'; g.fillStyle = '#fff';
+  g.beginPath(); g.ellipse(40, 32, 26, 15, 0, 0, TAU); g.fill();
+  g.beginPath(); g.moveTo(60, 32); g.lineTo(84, 20); g.lineTo(80, 32); g.lineTo(84, 44); g.closePath(); g.fill();
+  const t = new THREE.CanvasTexture(cv); t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; return t;
+})();
+const damselShadowMat = new THREE.MeshBasicMaterial({ map: damselShadowTex, color: 0x14262b, transparent: true, opacity: 0.45, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6 });
+const damselShadow = new THREE.InstancedMesh(new THREE.PlaneGeometry(1.3, 0.87).translate(0.05, 0, 0).rotateX(-Math.PI / 2), damselShadowMat, DAMS);
+damselShadow.frustumCulled = false; damselShadow.renderOrder = 1; damselShadow.count = 0; scene.add(damselShadow);
+
+// They live round the rocks standing in the shallows. Now and then a little group of 2-4 shows up at a rock ahead:
+// they hover by the rock, turn this way and that, dart a short way now and then, and slip round behind it when you come close.
+const damsel = { alive: false, wait: 8, used: new Map(), fish: [] };
+const damselRocks = rockSpots.map((c, i) => ({ ...c, i })).filter(c => { const d = c.x - shoreX(c.z); return d > 1.5 && d < 7.5 && c.r > 0.55 && ((c.i * 2654435761) % 997) / 997 < 0.6; });
+function spawnDamsels() {
+  const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
+  let best = null, bestD = 1e9;
+  for (const c of damselRocks) {
+    const rz = player.z + wrapZ(c.z - player.z), dx = c.x - player.x, dz = rz - player.z, d = Math.hypot(dx, dz);
+    if (d < 5 || d > 26 || (dx * fx + dz * fz) / d < 0.3) continue;            // somewhere ahead, not right at your feet
+    if (worldTime - (damsel.used.get(c.i) ?? -999) < 90) continue;
+    if (d < bestD) { bestD = d; best = { c, rz }; }
+  }
+  if (!best) { damsel.wait = 4; return; }
+  const { c, rz } = best, n = 2 + Math.floor(Math.random() * 3);
+  damsel.used.set(c.i, worldTime);
+  Object.assign(damsel, { alive: true, t: 0, rx: c.x, rz, rr: c.r, seen: false, out: 0 });
+  damsel.fish = Array.from({ length: n }, (_, k) => {
+    const a = Math.random() * TAU, rad = c.r * (0.95 + Math.random() * 0.35);
+    return { a, rad, ta: a, trad: rad, hdg: a + Math.PI / 2, x: c.x + Math.cos(a) * rad, z: rz + Math.sin(a) * rad, next: 1 + Math.random() * 3, ph: Math.random() * TAU, len: 0.068 + Math.random() * 0.016 };
+  });
+}
+const _dq = new THREE.Quaternion(), _dp = new THREE.Vector3(), _ds = new THREE.Vector3(), _dm = new THREE.Matrix4();
+function updateDamsels(dt) {
+  if (isNight) { damselMesh.count = damselShadow.count = 0; damsel.alive = false; return; }
+  if (!damsel.alive) {
+    damsel.wait -= dt; damselMesh.count = damselShadow.count = 0;
+    if (damsel.wait < 0) spawnDamsels();
+    return;
+  }
+  const D = damsel; D.t += dt;
+  const dPl = Math.hypot(D.rx - player.x, D.rz - player.z);
+  const leaving = dPl > 34;
+  D.out += ((leaving ? 0 : 1) - D.out) * Math.min(1, dt * (leaving ? 1.5 : 0.8));
+  if (leaving && D.out < 0.02) { D.alive = false; D.wait = 20 + Math.random() * 40; return; }
+  if (!D.seen && dPl < 6) { D.seen = true; meet('damsel', '岩のまわりにシリキルリスズメダイ'); }
+  const away = Math.atan2(D.rz - player.z, D.rx - player.x);                      // the far side of the rock, seen from you
+  const shx = -sunDir.x / sunDir.y * 0.12, shz = -sunDir.z / sunDir.y * 0.12;
+  D.fish.forEach((f, i) => {
+    const fd = Math.hypot(f.x - player.x, f.z - player.z);
+    f.next -= dt;
+    if (fd < 2.4) { f.ta = away + (i - 1.5) * 0.35; f.trad = D.rr * 1.0; f.next = 2 + Math.random() * 2; f.fast = 1; }   // hide behind the rock
+    else if (f.next < 0) {                                                           // a short dart to a new spot by the rock
+      f.ta = f.a + (Math.random() - 0.5) * 1.4; f.trad = D.rr * (0.95 + Math.random() * 0.4); f.next = 1.5 + Math.random() * 3.5; f.fast = 0;
+    }
+    const da = Math.atan2(Math.sin(f.ta - f.a), Math.cos(f.ta - f.a));
+    const rate = f.fast ? 2.4 : 1.1;
+    f.a += Math.max(-rate * dt, Math.min(rate * dt, da * Math.min(1, dt * 3)));
+    f.rad += (f.trad - f.rad) * Math.min(1, dt * 2);
+    f.ph += dt * (6 + Math.abs(da) * 10);
+    const wob = Math.sin(f.ph * 0.37 + i) * 0.04;
+    const nx = D.rx + Math.cos(f.a) * (f.rad + wob), nz = D.rz + Math.sin(f.a) * (f.rad + wob);
+    const vx = nx - f.x, vz = nz - f.z, sp = Math.hypot(vx, vz);
+    // face the way you swim; while hovering, turn gently this way and that
+    const want = sp > 0.0015 ? Math.atan2(vz, vx) : f.hdg + Math.sin(f.ph * 0.21) * 0.6 * dt;
+    f.hdg += Math.atan2(Math.sin(want - f.hdg), Math.cos(want - f.hdg)) * Math.min(1, dt * 6);
+    f.x = nx; f.z = nz;
+    const h = f.hdg + Math.sin(f.ph) * 0.12;
+    _dq.setFromAxisAngle(UP, Math.atan2(Math.sin(h), -Math.cos(h)));
+    const L = f.len * D.out; _ds.set(L, L, L);
+    _dp.set(f.x, 0.025, f.z); _dm.compose(_dp, _dq, _ds); damselMesh.setMatrixAt(i, _dm);
+    _dp.set(f.x + shx, 0.012, f.z + shz); _dm.compose(_dp, _dq, _ds); damselShadow.setMatrixAt(i, _dm);
+  });
+  damselMat.opacity = 0.92 * Math.min(1, D.out * 1.5); damselShadowMat.opacity = 0.45 * D.out;
+  damselMesh.count = damselShadow.count = D.fish.length;
+  damselMesh.instanceMatrix.needsUpdate = damselShadow.instanceMatrix.needsUpdate = true;
 }
 const crabs = [], plovers = [], terns = [];
 const tmpV = new THREE.Vector3();
@@ -2314,8 +2492,8 @@ function pressFoot(foot) {
 }
 
 /* ================= encounters ================= */
-const counts = { crab: 0, hermit: 0, bird: 0, flower: 0, fish: 0 };
-const countEls = { fish: document.getElementById('cFish'), hermit: document.getElementById('cHermit'), crab: document.getElementById('cCrab'), bird: document.getElementById('cBird'), flower: document.getElementById('cFlower') };
+const counts = { crab: 0, hermit: 0, bird: 0, flower: 0, fish: 0, damsel: 0 };
+const countEls = { damsel: document.getElementById('cDamsel'), fish: document.getElementById('cFish'), hermit: document.getElementById('cHermit'), crab: document.getElementById('cCrab'), bird: document.getElementById('cBird'), flower: document.getElementById('cFlower') };
 const meetEl = document.getElementById('meet'), stairEl = document.getElementById('stairwell'), stairText = document.getElementById('stairText');
 const seenFlower = new Set();
 function meet(kind, text) {
@@ -2636,6 +2814,7 @@ function updateCreatures(dt) {
 }
 function shiftCreatures(dz) {
   jet.group.position.z += dz;
+  if (damsel.alive) { damsel.rz += dz; for (const f of damsel.fish) f.z += dz; }
   for (const c of crabs) c.z += dz;
   for (const h of hermits) h.z += dz;
   if (school.alive) { school.cz += dz; for (const f of school.fish) f.z += dz; }
@@ -2773,12 +2952,97 @@ function setMode(m) { modeBtns.forEach(b => b.setAttribute('aria-checked', Strin
 modeBtns.forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)));
 altBox.addEventListener('change', () => { try { localStorage.setItem('nagisa.alt', altBox.checked ? '1' : '0'); } catch (e) {} });
 try { const m = localStorage.getItem('nagisa.mode'); if (m) setMode(m); const a = localStorage.getItem('nagisa.alt'); if (a) altBox.checked = a === '1'; } catch (e) {}
+
+/* ================= Webカメラ操作 (MediaPipe): swing your arms to walk, hold up one open palm and move it to look around ================= */
+const MP_VER = '0.10.14';
+const camBox = document.getElementById('cam'), camVid = document.getElementById('camVid'), camMsg = document.getElementById('camMsg');
+const camLook = { active: false, x: 0, y: 0, lostT: 0 };
+let camMsgTxt = '';
+const setCamMsg = t => { if (t !== camMsgTxt) { camMsgTxt = t; camMsg.textContent = t; } };
+async function startCam() {
+  camBox.classList.add('on'); setCamMsg('カメラを準備中…');
+  let pose, gest;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'user' }, audio: false });
+    camVid.srcObject = stream; await camVid.play();
+    setCamMsg('MediaPipe を読み込み中…');
+    const mp = await import(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VER}`);
+    const files = await mp.FilesetResolver.forVisionTasks(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VER}/wasm`);
+    const make = async (Kind, opts) => {
+      try { return await Kind.createFromOptions(files, { ...opts, baseOptions: { ...opts.baseOptions, delegate: 'GPU' } }); }
+      catch (e) { return await Kind.createFromOptions(files, { ...opts, baseOptions: { ...opts.baseOptions, delegate: 'CPU' } }); }
+    };
+    pose = await make(mp.PoseLandmarker, { runningMode: 'VIDEO', numPoses: 1,
+      baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task' } });
+    gest = await make(mp.GestureRecognizer, { runningMode: 'VIDEO', numHands: 2,
+      baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task' } });
+  } catch (e) {
+    console.warn(e);
+    setCamMsg(e && e.name === 'NotAllowedError' ? 'カメラが許可されませんでした' : 'カメラ操作を使えませんでした');
+    setTimeout(() => camBox.classList.remove('on'), 6000);
+    return;
+  }
+  setCamMsg('腕ふりで歩く ・ 片手パーで見回す');
+  // arm swing → steps: the difference in height of the two wrists, measured in shoulder widths
+  const swing = { s: 0, side: 0, t: 0 };
+  let lastVT = -1, flip = false, palms = 0;
+  const loop = () => {
+    requestAnimationFrame(loop);
+    if (camVid.readyState < 2 || camVid.currentTime === lastVT) return;
+    lastVT = camVid.currentTime;
+    const ts = performance.now();
+    flip = !flip;                                   // pose and hands take turns, so each runs at about half the camera rate
+    if (flip) {
+      const r = pose.detectForVideo(camVid, ts), L = r.landmarks && r.landmarks[0];
+      if (!L || camLook.active) { swing.s *= 0.8; return; }
+      const sh = Math.max(0.05, Math.abs(L[11].x - L[12].x));
+      if ((L[15].visibility ?? 1) < 0.4 || (L[16].visibility ?? 1) < 0.4) return;
+      const raw = (L[15].y - L[16].y) / sh;          // > 0: the left wrist is lower than the right
+      swing.s += (raw - swing.s) * 0.6;
+      const T = 0.22;
+      if (started && swing.s < -T && swing.side !== -1) { swing.side = -1; pressFoot('l'); }      // left arm forward/up → right foot
+      else if (started && swing.s > T && swing.side !== 1) { swing.side = 1; pressFoot('k'); }   // right arm forward/up → left foot
+    } else {
+      const r = gest.recognizeForVideo(camVid, ts);
+      // one open palm held up to the camera (all fingers straight); it has to show for a few frames running, so a swinging hand does not count
+      let tip = null;
+      const d = (p, q) => Math.hypot(p.x - q.x, p.y - q.y);
+      for (let i = 0; i < (r.landmarks || []).length && !tip; i++) {
+        const H = r.landmarks[i], g = r.gestures[i] && r.gestures[i][0];
+        const straight = [8, 12, 16, 20].every(k => d(H[k], H[0]) > d(H[k - 2], H[0]) * 1.1);
+        if (g && g.categoryName === 'Open_Palm' && g.score > 0.65 && straight) tip = H[9];      // the middle of the palm
+      }
+      if (tip && !camLook.active) {
+        const moved = camLook.cand ? d(tip, camLook.cand) : 1;
+        camLook.hold = moved < 0.04 ? (camLook.hold || 0) + 1 : 0;                              // still, not swinging past
+        camLook.cand = tip;
+        if (camLook.hold < 3) tip = null;
+      } else if (!tip) { camLook.hold = 0; camLook.cand = null; }
+      palms = tip ? 1 : 0;
+      if (tip) {
+        const mx = tip.x, my = tip.y;
+        if (!camLook.active) { camLook.active = true; camLook.x = mx; camLook.y = my; camBox.classList.add('look'); setCamMsg('見回し中'); }
+        // follow the hands like a mouse drag (the picture is not mirrored: moving the hands to your right lowers x)
+        const dx = mx - camLook.x, dy = my - camLook.y;
+        camLook.x += dx * 0.6; camLook.y += dy * 0.6;
+        player.yaw += dx * 0.6 * 3.2; player.pitch += dy * 0.6 * 2.4;
+        camLook.edge = Math.abs(mx - 0.5) > 0.3 ? Math.sign(0.5 - mx) : 0;     // a palm held near the edge keeps turning
+        player.pitch = Math.max(-0.9, Math.min(1.3, player.pitch));
+        camLook.lostT = ts;
+      } else if (camLook.active && ts - camLook.lostT > 350) {
+        camLook.active = false; camLook.edge = 0; lastDragT = performance.now(); camBox.classList.remove('look'); setCamMsg('腕ふりで歩く ・ 片手パーで見回す');
+      }
+    }
+  };
+  loop();
+}
 function begin() {
   if (started) return;
   autoMode = modeBtns[1].getAttribute('aria-checked') === 'true'; altRule = altBox.checked;
   if (autoMode) { player.moveYaw = routeYaw(); }
   started = true; initAudio(); if (actx && actx.state === 'suspended') actx.resume();
   intro.classList.add('gone'); keyK.classList.add('next'); keyL.classList.add('next'); lastMoveT = performance.now();
+  if (document.getElementById('useCam').checked) startCam();
 }
 go.addEventListener('click', begin);
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
@@ -2794,6 +3058,7 @@ function frame() {
   const turn = (keysHeld.ArrowRight ? 1 : 0) - (keysHeld.ArrowLeft ? 1 : 0);
   yawVel += (turn * 1.3 - yawVel) * Math.min(1, dt * 8);
   player.yaw -= yawVel * dt;
+  if (camLook.active && camLook.edge) player.yaw -= camLook.edge * 0.9 * dt;   // a palm held near the edge of the camera picture: keep turning that way
 
   let bob = 0, roll = 0;
   if (step) {
@@ -2854,7 +3119,7 @@ function frame() {
   if (player.z < -PERIOD) wrap(PERIOD); else if (player.z > PERIOD * 0.5) wrap(-PERIOD);
 
   {
-    const free = !drag && performance.now() - lastDragT > 1500;
+    const free = !drag && !camLook.active && performance.now() - lastDragT > 1500;
     // ease the view like a soft spring: from rest it speeds up gently, is quickest midway, and settles without overshoot
     const spring = (err, vKey, tKey, k) => {
       if (worldTime - (player[tKey] ?? -9) > 0.2 || !free) player[vKey] = 0;   // a fresh start after a pause or a hand on the view
@@ -2927,7 +3192,7 @@ function frame() {
   }
   if (dirty) printsDirty();
 
-  updateCreatures(dt); updateFish(dt); updateJet(dt);
+  updateCreatures(dt); updateFish(dt); updateDamsels(dt); updateJet(dt);
   flameMat.uniforms.uTime.value = worldTime;
   { const k = Math.round((player.z - TORCH.z) / PERIOD) * PERIOD, flick = 0.82 + 0.12 * Math.sin(worldTime * 11.3) + 0.08 * Math.sin(worldTime * 23.7 + 1.3);
     torchLight.position.set(TORCH.x, heightAt(TORCH.x, TORCH.z) + 1.95, TORCH.z + k);
